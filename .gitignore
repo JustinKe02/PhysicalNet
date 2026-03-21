@@ -1,0 +1,13 @@
+# 数据集
+Mos2_data/
+WS2_data/
+Graphene_data/
+# 训练输出（模型权重、日志）
+output/
+__pycache__/
+*.pyc
+# TensorBoard
+runs/
+# 系统文件
+.DS_Store
+*.swp
