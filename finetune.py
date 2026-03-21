@@ -59,6 +59,28 @@ from utils.losses import HybridLoss
 from utils.metrics import SegmentationMetrics
 
 
+# Per-dataset configuration: class mapping + display names
+# MoS2 source classes: 0=BG, 1=monolayer, 2=fewlayer, 3=multilayer
+DATASET_CONFIGS = {
+    'graphene': {
+        'class_map': {0: [0], 1: [1], 2: [2, 3]},  # BG / 1L / >1L
+        'class_names': ['BG', '1L', '>1L'],
+    },
+    'ws2': {
+        'class_map': {0: [0], 1: [1], 2: [2], 3: [3]},  # same semantics
+        'class_names': ['BG', '1L', 'FL', 'ML'],
+    },
+    'binary': {
+        'class_map': {0: [0], 1: [1, 2, 3]},  # BG vs FG
+        'class_names': ['BG', 'FG'],
+    },
+    'mos2': {
+        'class_map': {0: [0], 1: [1], 2: [2], 3: [3]},  # identity
+        'class_names': ['BG', '1L', 'FL', 'ML'],
+    },
+}
+
+
 def get_args():
     parser = argparse.ArgumentParser(description='RepELA-Net Fine-tuning')
     parser.add_argument('--data_root', type=str, required=True,
@@ -85,8 +107,8 @@ def get_args():
                         help='Encoder LR = lr * encoder_lr_scale')
     parser.add_argument('--weight_decay', type=float, default=0.01)
     parser.add_argument('--warmup_epochs', type=int, default=5)
-    parser.add_argument('--freeze_encoder_epochs', type=int, default=20,
-                        help='Freeze encoder for N epochs, then unfreeze')
+    parser.add_argument('--freeze_encoder_epochs', type=int, default=0,
+                        help='Freeze encoder stages for N epochs, then unfreeze (0=no freeze)')
     parser.add_argument('--early_stop_patience', type=int, default=30,
                         help='Stop if val mIoU does not improve for N epochs')
     parser.add_argument('--num_workers', type=int, default=4)
@@ -98,6 +120,10 @@ def get_args():
     # Output
     parser.add_argument('--output_dir', type=str, default='./output')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--class_map', type=str, default='auto',
+                        choices=list(DATASET_CONFIGS.keys()) + ['auto', 'none'],
+                        help='Dataset class mapping for head init. '
+                             'auto=infer from --name, none=random init')
 
     return parser.parse_args()
 
@@ -114,39 +140,91 @@ def setup_logger(output_dir):
     return logger
 
 
+
+def _init_head_from_class_map(model, head_weights, class_map, logger=None):
+    """Initialize classification head using class mapping from pretrained weights.
+
+    Args:
+        model: target model (already has randomly-init heads with num_classes_target)
+        head_weights: dict of cloned pretrained head tensors
+        class_map: dict mapping new_class_id -> [old_class_ids]
+    """
+    if class_map is None:
+        if logger:
+            logger.info('  No class_map provided, using random head init')
+        return
+
+    model_sd = model.state_dict()
+
+    for key, old_tensor in head_weights.items():
+        if key not in model_sd:
+            continue  # key shape changed, skip
+
+        new_tensor = model_sd[key].clone()
+
+        # Only remap if first dim matches num_classes
+        if old_tensor.shape[0] == 4 and new_tensor.shape[0] != 4:
+            for new_cls, old_cls_list in class_map.items():
+                if new_cls < new_tensor.shape[0]:
+                    new_tensor[new_cls] = torch.stack(
+                        [old_tensor[c] for c in old_cls_list]
+                    ).mean(dim=0)
+            model_sd[key] = new_tensor
+            if logger:
+                logger.info(f'  Mapped {key}: {dict(class_map)}')
+
+    model.load_state_dict(model_sd)
+
+
 def load_pretrained(model, checkpoint_path, num_classes_pretrained=4,
-                    num_classes_target=4, logger=None):
-    """Load pretrained weights, handling class count mismatch."""
+                    num_classes_target=4, class_map=None, logger=None):
+    """Load pretrained weights with class-mapped head initialization."""
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     pretrained_sd = ckpt['model']
 
-    if num_classes_pretrained != num_classes_target:
-        # Remove classification head weights that don't match
-        keys_to_remove = []
-        for k in list(pretrained_sd.keys()):
-            if 'seg_head' in k or 'boundary_head' in k:
-                shape = pretrained_sd[k].shape
-                if len(shape) > 0 and (shape[0] == num_classes_pretrained or
-                        (len(shape) > 1 and shape[1] == num_classes_pretrained)):
-                    keys_to_remove.append(k)
+    # Always extract head weights for potential class_map remapping
+    head_keys = []
+    for k in list(pretrained_sd.keys()):
+        if 'seg_head' in k or 'boundary_head' in k:
+            shape = pretrained_sd[k].shape
+            if len(shape) > 0 and (shape[0] == num_classes_pretrained or
+                    (len(shape) > 1 and shape[1] == num_classes_pretrained)):
+                head_keys.append(k)
 
-        for k in keys_to_remove:
+    head_weights = {k: pretrained_sd[k].clone() for k in head_keys}
+
+    # Only remove head weights from state dict if shapes won't match
+    if num_classes_pretrained != num_classes_target:
+        for k in head_keys:
             del pretrained_sd[k]
             if logger:
-                logger.info(f'  Skipped (class mismatch): {k}')
+                logger.info(f'  Removed (will remap): {k}')
 
-    # Load with strict=False so mismatched keys are ignored
+    # Always remove source-domain normalization buffers so they don't
+    # overwrite the target-domain values set during model construction
+    for k in list(pretrained_sd.keys()):
+        if 'color_enhance.mean' in k or 'color_enhance.std' in k:
+            del pretrained_sd[k]
+            if logger:
+                logger.info(f'  Excluded (keep target norm): {k}')
+
+    # Load backbone weights (strict=False for missing head keys / norm buffers)
     missing, unexpected = model.load_state_dict(pretrained_sd, strict=False)
     if logger:
         logger.info(f'  Loaded pretrained weights from: {checkpoint_path}')
         logger.info(f'  Pretrained epoch: {ckpt.get("epoch", "?")+1}, '
                     f'mIoU: {ckpt.get("best_miou", "?"):.4f}')
         if missing:
-            logger.info(f'  Missing keys (will be randomly init): {len(missing)}')
+            logger.info(f'  Missing keys (will be init via class_map): {len(missing)}')
             for k in missing:
                 logger.info(f'    {k}')
         if unexpected:
             logger.info(f'  Unexpected keys (ignored): {len(unexpected)}')
+
+    # Initialize heads from class mapping (always if class_map provided,
+    # not just when num_classes differs -- handles same-class-count different-semantics)
+    if class_map is not None:
+        _init_head_from_class_map(model, head_weights, class_map, logger)
 
     return model
 
@@ -270,6 +348,9 @@ def validate(model, val_dataset, device, args, logger, mean=None, std=None):
 
 def main():
     args = get_args()
+    import random, numpy as np
+    random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
@@ -313,13 +394,41 @@ def main():
     # Model
     model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
                 'base': repela_net_base}[args.model]
-    model = model_fn(num_classes=args.num_classes).to(device)
+    model = model_fn(num_classes=args.num_classes,
+                     norm_mean=ds_mean, norm_std=ds_std).to(device)
+
+    # Resolve dataset config for class mapping
+    ds_key = args.class_map
+    if ds_key == 'auto':
+        name_lower = args.name.lower()
+        # Exact match first, then prefix match
+        if name_lower in DATASET_CONFIGS:
+            ds_key = name_lower
+        else:
+            matches = [k for k in DATASET_CONFIGS if name_lower.startswith(k)]
+            if matches:
+                ds_key = max(matches, key=len)  # longest prefix
+                logger.info(f'  Auto-matched --name "{args.name}" -> config "{ds_key}"')
+            else:
+                ds_key = 'none'
+                logger.warning(f'  No dataset config matches --name "{args.name}". '
+                               f'Available: {list(DATASET_CONFIGS.keys())}. '
+                               f'Using random head init. Pass --class_map explicitly to override.')
+    if ds_key == 'none':
+        ds_cfg = None
+    else:
+        ds_cfg = DATASET_CONFIGS.get(ds_key)
+    class_map = ds_cfg['class_map'] if ds_cfg else None
+    class_names = ds_cfg['class_names'] if ds_cfg else [f'C{i}' for i in range(args.num_classes)]
+    logger.info(f'Dataset config: {ds_key} -> classes={class_names}, '
+                f'class_map={"yes" if class_map else "none (random head init)"}')
 
     # Load pretrained
     logger.info('Loading pretrained MoS2 weights...')
     model = load_pretrained(model, args.pretrained,
                             num_classes_pretrained=4,
                             num_classes_target=args.num_classes,
+                            class_map=class_map,
                             logger=logger)
     model = model.to(device)
 
@@ -370,19 +479,20 @@ def main():
     logger.info('=' * 60)
 
     best_miou = 0.0
-    class_names = {
-        3: ['BG', '1L', '2L'],  # graphene
-        4: ['BG', '1L', '2L', 'ML'],  # WS2/MoS2
-    }.get(args.num_classes, [f'C{i}' for i in range(args.num_classes)])
 
-    # Freeze encoder initially
+    # Freeze encoder stages only (keep color_enhance, stem, seg_head trainable)
     encoder_frozen = False
     if args.freeze_encoder_epochs > 0:
+        frozen_count = 0
         for name, p in model.named_parameters():
-            if 'decoder' not in name:
+            # Only freeze stage1-4 backbone layers
+            if any(s in name for s in ['stage1', 'stage2', 'stage3', 'stage4']):
                 p.requires_grad = False
+                frozen_count += 1
         encoder_frozen = True
-        logger.info(f'Encoder FROZEN for first {args.freeze_encoder_epochs} epochs')
+        logger.info(f'Encoder stages FROZEN ({frozen_count} params) for first '
+                    f'{args.freeze_encoder_epochs} epochs')
+        logger.info(f'  Trainable: color_enhance, stem, decoder, seg_head, boundary_head')
 
     no_improve_count = 0
     logger.info(f'Early stopping patience: {args.early_stop_patience} epochs')

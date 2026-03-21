@@ -34,7 +34,7 @@ CLASS_COLORS = {
     4: np.array([[0,0,0],[239,41,41],[0,170,0],[114,159,207]], dtype=np.uint8),  # WS2/MoS2
 }
 CLASS_NAMES = {
-    3: ['Background', 'Monolayer', 'Bilayer'],
+    3: ['Background', 'Monolayer', '>1L'],
     4: ['Background', 'Monolayer', 'Fewlayer', 'Multilayer'],
 }
 
@@ -56,7 +56,9 @@ def sliding_window_predict(model, img_tensor, crop_size, stride, device):
         for x in xs:
             crop = padded[:, y:y+crop_size, x:x+crop_size].unsqueeze(0).to(device)
             with torch.no_grad():
-                probs = F.softmax(model(crop), dim=1)[0]
+                output = model(crop)
+                logits = output[0] if isinstance(output, tuple) else output
+                probs = F.softmax(logits, dim=1)[0]
             ye, xe = min(y+crop_size, H), min(x+crop_size, W)
             pred_sum[:, y:ye, x:xe] += probs[:, :ye-y, :xe-x]
             count[y:ye, x:xe] += 1
@@ -102,12 +104,25 @@ def main():
     # Load model
     model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
                 'base': repela_net_base}[args.model]
-    model = model_fn(num_classes=args.num_classes).to(device)
+    model = model_fn(num_classes=args.num_classes,
+                     norm_mean=ds_mean, norm_std=ds_std).to(device)
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt['model'])
+    ckpt_sd = ckpt['model'] if 'model' in ckpt else ckpt
+
+    # Exclude source-domain norm buffers (keep target-domain values)
+    for k in list(ckpt_sd.keys()):
+        if 'color_enhance.mean' in k or 'color_enhance.std' in k:
+            del ckpt_sd[k]
+
+    missing, unexpected = model.load_state_dict(ckpt_sd, strict=False)
+    if missing:
+        print(f'  Note: {len(missing)} missing keys (new model has extra params)')
+    if unexpected:
+        print(f'  Note: {len(unexpected)} unexpected keys in checkpoint (ignored)')
     model.eval()
-    print(f'Loaded: {args.checkpoint} (Epoch {ckpt["epoch"]+1}, '
-          f'mIoU={ckpt.get("best_miou","?"):.4f})')
+    epoch_info = ckpt.get('epoch', -1) + 1 if isinstance(ckpt, dict) and 'epoch' in ckpt else '?'
+    miou_info = f"{ckpt.get('best_miou', 0):.4f}" if isinstance(ckpt, dict) and 'best_miou' in ckpt else '?'
+    print(f'Loaded: {args.checkpoint} (Epoch {epoch_info}, mIoU={miou_info})')
 
     # Collect images
     import glob

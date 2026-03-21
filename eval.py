@@ -178,16 +178,25 @@ def predict_tta(model, img_tensor, device):
         lambda x: x.flip(1).flip(2),
     ]
 
+    success_count = 0
     for tfm, inv_tfm in zip(transforms, inverse_transforms):
         augmented = tfm(img_tensor)
         try:
-            logits = model(augmented.unsqueeze(0).to(device))
+            output = model(augmented.unsqueeze(0).to(device))
+            logits = output[0] if isinstance(output, tuple) else output
             probs = F.softmax(logits, dim=1)[0]
             probs = inv_tfm(probs)
             prob_sum += probs
+            success_count += 1
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
             continue
+
+    if success_count == 0:
+        raise RuntimeError('TTA failed: all augmentation branches ran out of GPU memory')
+    if success_count < len(transforms):
+        import warnings
+        warnings.warn(f'TTA: only {success_count}/{len(transforms)} branches succeeded (OOM on others)')
 
     return prob_sum.argmax(dim=0).cpu().numpy()
 

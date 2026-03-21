@@ -259,11 +259,14 @@ class BoundaryLoss(nn.Module):
         top2 = probs.topk(2, dim=1).values
         boundary_pred = 1.0 - (top2[:, 0:1] - top2[:, 1:2])  # Low confidence → boundary
 
-        # Weighted BCE (more weight on boundary pixels since they're rare)
-        pos_weight = torch.tensor([5.0], device=logits.device)
-        loss = F.binary_cross_entropy_with_logits(
-            boundary_pred, boundary_gt, pos_weight=pos_weight
-        )
+        # BCE loss (boundary_pred is already in [0,1] from softmax, so use
+        # binary_cross_entropy, NOT binary_cross_entropy_with_logits)
+        boundary_pred = boundary_pred.clamp(1e-6, 1 - 1e-6)
+        # Manual pos_weight: weight boundary pixels more since they're rare
+        weight = torch.where(boundary_gt > 0.5,
+                             torch.tensor(5.0, device=logits.device),
+                             torch.tensor(1.0, device=logits.device))
+        loss = F.binary_cross_entropy(boundary_pred, boundary_gt, weight=weight)
         return loss
 
 

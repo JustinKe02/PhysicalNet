@@ -209,6 +209,7 @@ def validate(model, val_loader, criterion, device):
     metrics = SegmentationMetrics(4)
     total_loss = total_ce = total_dice = 0
     num_images = 0
+    loss_images = 0  # Only count images where loss was computed
 
     for images_list, masks_list in val_loader:
         for img_tensor, mask_tensor in zip(images_list, masks_list):
@@ -228,10 +229,15 @@ def validate(model, val_loader, criterion, device):
                 total_loss += loss.item()
                 total_ce += ce_loss.item()
                 total_dice += dice_loss.item()
+                loss_images += 1
                 prediction = logits.argmax(dim=1)[0].cpu().numpy()
-            except (torch.cuda.OutOfMemoryError, RuntimeError):
+            except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
-                prediction = torch.zeros_like(torch.from_numpy(mask_np)).numpy()
+                # Fallback to sliding window instead of zeros
+                from train import sliding_window_predict
+                prediction = sliding_window_predict(
+                    model, img_tensor, crop_size=512, stride=384, device=device
+                )
 
             metrics.update(
                 torch.from_numpy(prediction).unsqueeze(0),
@@ -240,10 +246,10 @@ def validate(model, val_loader, criterion, device):
             num_images += 1
 
     results = metrics.get_results()
-    if num_images > 0:
-        results['val_loss'] = total_loss / num_images
-        results['val_ce'] = total_ce / num_images
-        results['val_dice'] = total_dice / num_images
+    if loss_images > 0:
+        results['val_loss'] = total_loss / loss_images
+        results['val_ce'] = total_ce / loss_images
+        results['val_dice'] = total_dice / loss_images
     return results
 
 
@@ -313,6 +319,9 @@ def get_args():
 
 
 def train_single_ablation(ablation, args):
+    import random as _random, numpy as _np
+    _random.seed(args.seed)
+    _np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 

@@ -11,12 +11,13 @@ Usage:
 """
 
 import os
-import sys
-import time
-import argparse
+import math
+import random
 import logging
+import argparse
 from datetime import datetime
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,6 +29,7 @@ from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base
 from datasets.mos2_dataset import get_dataloaders, MoS2Dataset
 from utils.losses import HybridLoss
 from utils.metrics import SegmentationMetrics
+from train_ablation import build_ablation_model, ALL_ABLATIONS, ABLATION_NAMES
 
 
 def get_args():
@@ -44,6 +46,8 @@ def get_args():
     parser.add_argument('--model', type=str, default='small',
                         choices=['tiny', 'small', 'base'])
     parser.add_argument('--num_classes', type=int, default=4)
+    parser.add_argument('--ablation', type=str, default=None,
+                        help=f'Ablation variant. Options: {", ".join(ALL_ABLATIONS)}')
 
     # Training
     parser.add_argument('--epochs', type=int, default=200)
@@ -72,8 +76,8 @@ def get_args():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--amp', action=argparse.BooleanOptionalAction, default=False,
                         help='Mixed precision training (--amp / --no-amp)')
-    parser.add_argument('--deep_supervision', action='store_true', default=True,
-                        help='Enable deep supervision auxiliary losses')
+    parser.add_argument('--deep_supervision', action=argparse.BooleanOptionalAction, default=True,
+                        help='Enable deep supervision auxiliary losses (--deep_supervision / --no-deep_supervision)')
     parser.add_argument('--aux_loss_weight', type=float, default=0.4,
                         help='Weight for each auxiliary loss head')
     parser.add_argument('--early_stop_patience', type=int, default=20,
@@ -142,7 +146,8 @@ def sliding_window_predict(model, img_tensor, crop_size=512, stride=384, device=
         for x in x_positions:
             crop = img_tensor[:, y:y+crop_size, x:x+crop_size].unsqueeze(0).to(device)
             with torch.no_grad():
-                logits = model(crop)
+                output = model(crop)
+                logits = output[0] if isinstance(output, tuple) else output
                 probs = F.softmax(logits, dim=1)[0]
 
             y_end = min(y + crop_size, H)
@@ -220,7 +225,8 @@ def predict_full_or_sliding(model, img_tensor, crop_size, stride, device):
     """Try full-image inference, fallback to sliding window on OOM."""
     try:
         img = img_tensor.unsqueeze(0).to(device)
-        logits = model(img)
+        output = model(img)
+        logits = output[0] if isinstance(output, tuple) else output
         pred = logits.argmax(dim=1)[0].cpu().numpy()
         return pred
     except torch.cuda.OutOfMemoryError:
@@ -235,6 +241,7 @@ def validate(model, val_loader, criterion, device, args, logger):
     metrics = SegmentationMetrics(args.num_classes)
     total_loss = total_ce = total_dice = 0
     num_images = 0
+    loss_images = 0  # Only count images where loss was actually computed
 
     for images_list, masks_list in val_loader:
         for img_tensor, mask_tensor in zip(images_list, masks_list):
@@ -244,11 +251,13 @@ def validate(model, val_loader, criterion, device, args, logger):
             try:
                 img = img_tensor.unsqueeze(0).to(device)
                 mask_dev = torch.from_numpy(mask_np).unsqueeze(0).long().to(device)
-                logits = model(img)
+                output = model(img)
+                logits = output[0] if isinstance(output, tuple) else output
                 loss, ce_loss, dice_loss = criterion(logits, mask_dev)
                 total_loss += loss.item()
                 total_ce += ce_loss.item()
                 total_dice += dice_loss.item()
+                loss_images += 1
                 prediction = logits.argmax(dim=1)[0].cpu().numpy()
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
@@ -267,20 +276,26 @@ def validate(model, val_loader, criterion, device, args, logger):
             num_images += 1
 
     results = metrics.get_results()
-    if num_images > 0:
-        results['val_loss'] = total_loss / num_images
-        results['val_ce'] = total_ce / num_images
-        results['val_dice'] = total_dice / num_images
+    if loss_images > 0:
+        results['val_loss'] = total_loss / loss_images
+        results['val_ce'] = total_ce / loss_images
+        results['val_dice'] = total_dice / loss_images
     return results
 
 
 def main():
     args = get_args()
+    random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = os.path.join(args.output_dir, f'repela_{args.model}_{timestamp}')
+    if args.ablation and args.ablation != 'full':
+        run_name = f'ablation_{args.ablation}_{timestamp}'
+    else:
+        run_name = f'repela_{args.model}_{timestamp}'
+    output_dir = os.path.join(args.output_dir, run_name)
     logger = setup_logger(output_dir)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f'Device: {device}')
@@ -299,13 +314,19 @@ def main():
     )
 
     # Model
-    model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
-                'base': repela_net_base}[args.model]
-    model = model_fn(num_classes=args.num_classes,
-                     deep_supervision=args.deep_supervision).to(device)
+    if args.ablation and args.ablation != 'full':
+        model = build_ablation_model(args.ablation, args.num_classes,
+                                     deep_supervision=args.deep_supervision).to(device)
+        model_name = ABLATION_NAMES.get(args.ablation, args.ablation)
+    else:
+        model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
+                    'base': repela_net_base}[args.model]
+        model = model_fn(num_classes=args.num_classes,
+                         deep_supervision=args.deep_supervision).to(device)
+        model_name = f'RepELA-Net-{args.model}'
 
     total_params = sum(p.numel() for p in model.parameters())
-    logger.info(f'Model: RepELA-Net-{args.model}, Params: {total_params:,} ({total_params/1e6:.2f}M)')
+    logger.info(f'Model: {model_name}, Params: {total_params:,} ({total_params/1e6:.2f}M)')
     logger.info(f'Deep supervision: {args.deep_supervision}')
 
     # Loss

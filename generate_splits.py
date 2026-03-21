@@ -1,7 +1,7 @@
 """
 Generate fixed train/val/test splits for MoS2 dataset.
 
-Split ratio: 60% train / 20% val / 20% test
+Split ratio: 70% train / 15% val / 15% test (default)
 Saves to splits/train.txt, splits/val.txt, splits/test.txt
 
 Usage:

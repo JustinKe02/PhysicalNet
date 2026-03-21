@@ -35,13 +35,13 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 def compute_dataset_stats(data_root, split='train', cache=True):
     """Compute RGB mean and std for a dataset.
 
-    Scans all training images and returns per-channel statistics.
-    Results are cached to data_root/stats.json to avoid recomputation.
+    Scans all images in the given split and returns per-channel pixel-level
+    statistics. Results are cached to data_root/stats_{split}.json.
 
     Returns:
         dict with 'mean' (list[3]) and 'std' (list[3]) in [0,1] range
     """
-    cache_path = os.path.join(data_root, 'stats.json')
+    cache_path = os.path.join(data_root, f'stats_{split}.json')
     if cache and os.path.exists(cache_path):
         with open(cache_path) as f:
             stats = json.load(f)
@@ -54,18 +54,26 @@ def compute_dataset_stats(data_root, split='train', cache=True):
     if not paths:
         raise FileNotFoundError(f'No images found in {img_dir}')
 
-    means, stds = [], []
+    # Two-pass pixel-level computation for correct mean/std
+    # Pass 1: compute mean
+    pixel_sum = np.zeros(3, dtype=np.float64)
+    pixel_count = 0
     for p in paths:
-        img = np.array(Image.open(p).convert('RGB')).astype(np.float32) / 255.0
-        means.append(img.mean(axis=(0, 1)))
-        stds.append(img.std(axis=(0, 1)))
+        img = np.array(Image.open(p).convert('RGB')).astype(np.float64) / 255.0
+        pixel_sum += img.sum(axis=(0, 1))
+        pixel_count += img.shape[0] * img.shape[1]
+    mean = (pixel_sum / pixel_count).tolist()
 
-    mean = np.mean(means, axis=0).tolist()
-    std = np.mean(stds, axis=0).tolist()
+    # Pass 2: compute std
+    sq_diff_sum = np.zeros(3, dtype=np.float64)
+    for p in paths:
+        img = np.array(Image.open(p).convert('RGB')).astype(np.float64) / 255.0
+        sq_diff_sum += ((img - mean) ** 2).sum(axis=(0, 1))
+    std = np.sqrt(sq_diff_sum / pixel_count).tolist()
     # Clamp std to avoid division issues
     std = [max(s, 0.01) for s in std]
 
-    stats = {'mean': mean, 'std': std, 'num_images': len(paths)}
+    stats = {'mean': mean, 'std': std, 'num_images': len(paths), 'split': split}
 
     if cache:
         with open(cache_path, 'w') as f:
@@ -77,8 +85,8 @@ def compute_dataset_stats(data_root, split='train', cache=True):
 def get_auto_crop_size(data_root, split='train', max_crop=512, margin=32):
     """Determine crop size based on image dimensions.
 
-    For small images (< max_crop), uses a smaller crop to allow
-    random positioning diversity during training.
+    Scans ALL images and uses the minimum dimension across the dataset
+    to ensure every image can be cropped consistently.
     """
     img_dir = os.path.join(data_root, 'img_dir', split)
     paths = glob.glob(os.path.join(img_dir, '*.jpg')) + \
@@ -86,9 +94,12 @@ def get_auto_crop_size(data_root, split='train', max_crop=512, margin=32):
     if not paths:
         return max_crop
 
-    img = Image.open(paths[0])
-    w, h = img.size
-    min_dim = min(w, h)
+    # Find minimum dimension across ALL images
+    min_dim = float('inf')
+    for p in paths:
+        img = Image.open(p)
+        w, h = img.size
+        min_dim = min(min_dim, w, h)
 
     if min_dim <= max_crop:
         # Use smaller crop to allow random positioning
@@ -151,6 +162,20 @@ class MaterialDataset(Dataset):
 
     def _random_crop(self, img, mask):
         w, h = img.size
+
+        # Scale jitter: random resize before crop (multi-scale training)
+        if self.augment and random.random() > 0.3:
+            scale = random.uniform(0.5, 2.0)
+            new_h, new_w = int(h * scale), int(w * scale)
+            # Ensure at least crop_size
+            new_h = max(new_h, self.crop_size)
+            new_w = max(new_w, self.crop_size)
+            img = TF.resize(img, [new_h, new_w],
+                            interpolation=TF.InterpolationMode.BILINEAR)
+            mask = TF.resize(mask, [new_h, new_w],
+                             interpolation=TF.InterpolationMode.NEAREST)
+            w, h = new_w, new_h
+
         crop_h = min(self.crop_size, h)
         crop_w = min(self.crop_size, w)
         top = random.randint(0, h - crop_h) if h > crop_h else 0
@@ -178,6 +203,9 @@ class MaterialDataset(Dataset):
             img = TF.adjust_contrast(img, random.uniform(0.8, 1.2))
         if random.random() > 0.5:
             img = TF.adjust_saturation(img, random.uniform(0.8, 1.2))
+        # Hue jitter for domain robustness
+        if random.random() > 0.5:
+            img = TF.adjust_hue(img, random.uniform(-0.05, 0.05))
         return img, mask
 
     def __getitem__(self, idx):

@@ -29,26 +29,37 @@ class ColorSpaceEnhancement(nn.Module):
     Output: Enhanced [B, 4, H, W] (RGB + S_channel)
     """
 
-    def __init__(self):
+    def __init__(self, norm_mean=None, norm_std=None):
         super().__init__()
         # Learnable weight for the saturation channel
         self.s_weight = nn.Parameter(torch.tensor(1.0))
+        # Normalization constants for denormalization (default: ImageNet)
+        if norm_mean is None:
+            norm_mean = [0.485, 0.456, 0.406]
+        if norm_std is None:
+            norm_std = [0.229, 0.224, 0.225]
+        self.register_buffer('mean', torch.tensor(norm_mean).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor(norm_std).view(1, 3, 1, 1))
 
-    def rgb_to_saturation(self, rgb):
-        """Extract saturation channel from RGB image.
+    def rgb_to_saturation(self, rgb_normalized):
+        """Extract saturation channel from normalized RGB image.
         
+        First denormalizes to [0,1] RGB, then computes:
         Saturation = (Max - Min) / Max, where Max and Min are
         per-pixel max/min across R, G, B channels.
         """
-        max_rgb = rgb.max(dim=1, keepdim=True)[0]
-        min_rgb = rgb.min(dim=1, keepdim=True)[0]
+        # Denormalize: x_orig = x * std + mean → [0, 1] range
+        rgb_01 = rgb_normalized * self.std + self.mean
+        rgb_01 = rgb_01.clamp(0.0, 1.0)
+        max_rgb = rgb_01.max(dim=1, keepdim=True)[0]
+        min_rgb = rgb_01.min(dim=1, keepdim=True)[0]
         saturation = (max_rgb - min_rgb) / (max_rgb + 1e-6)
         return saturation
 
     def forward(self, x):
         # x: [B, 3, H, W] normalized RGB
         sat = self.rgb_to_saturation(x)  # [B, 1, H, W]
-        # Concatenate RGB with weighted saturation
+        # Concatenate normalized RGB with weighted saturation
         enhanced = torch.cat([x, self.s_weight * sat], dim=1)
         return enhanced
 
@@ -73,7 +84,7 @@ class RepELANet(nn.Module):
     def __init__(self, num_classes=4, channels=(32, 64, 128, 256),
                  num_blocks=(2, 2, 4, 2), num_heads=(0, 0, 4, 8),
                  decoder_channels=128, drop_rate=0.1, deploy=False,
-                 deep_supervision=False):
+                 deep_supervision=False, norm_mean=None, norm_std=None):
         """
         Args:
             num_classes: number of segmentation classes (4 for MoS2 dataset)
@@ -84,13 +95,15 @@ class RepELANet(nn.Module):
             drop_rate: dropout rate
             deploy: if True, use fused/deployed convolutions
             deep_supervision: if True, add auxiliary classification heads
+            norm_mean: RGB normalization mean for CSE denormalization (default: ImageNet)
+            norm_std: RGB normalization std for CSE denormalization (default: ImageNet)
         """
         super().__init__()
         self.num_classes = num_classes
         c1, c2, c3, c4 = channels
 
         # Color space enhancement
-        self.color_enhance = ColorSpaceEnhancement()
+        self.color_enhance = ColorSpaceEnhancement(norm_mean=norm_mean, norm_std=norm_std)
 
         # Stem: initial downsampling (4x4 -> 1/4 resolution)
         self.stem = nn.Sequential(
@@ -204,7 +217,7 @@ class RepELANet(nn.Module):
         return params, flops, params_str, flops_str
 
 
-def repela_net_tiny(num_classes=4, deploy=False, deep_supervision=False):
+def repela_net_tiny(num_classes=4, deploy=False, deep_supervision=False, **kwargs):
     """RepELA-Net-Tiny: ~1.5M params."""
     return RepELANet(
         num_classes=num_classes,
@@ -214,11 +227,12 @@ def repela_net_tiny(num_classes=4, deploy=False, deep_supervision=False):
         decoder_channels=96,
         drop_rate=0.05,
         deploy=deploy,
-        deep_supervision=deep_supervision
+        deep_supervision=deep_supervision,
+        **kwargs
     )
 
 
-def repela_net_small(num_classes=4, deploy=False, deep_supervision=False):
+def repela_net_small(num_classes=4, deploy=False, deep_supervision=False, **kwargs):
     """RepELA-Net-Small: ~2.8M params (recommended for MoS2)."""
     return RepELANet(
         num_classes=num_classes,
@@ -228,11 +242,12 @@ def repela_net_small(num_classes=4, deploy=False, deep_supervision=False):
         decoder_channels=128,
         drop_rate=0.1,
         deploy=deploy,
-        deep_supervision=deep_supervision
+        deep_supervision=deep_supervision,
+        **kwargs
     )
 
 
-def repela_net_base(num_classes=4, deploy=False, deep_supervision=False):
+def repela_net_base(num_classes=4, deploy=False, deep_supervision=False, **kwargs):
     """RepELA-Net-Base: ~5M params (higher accuracy)."""
     return RepELANet(
         num_classes=num_classes,
@@ -242,5 +257,6 @@ def repela_net_base(num_classes=4, deploy=False, deep_supervision=False):
         decoder_channels=192,
         drop_rate=0.1,
         deploy=deploy,
-        deep_supervision=deep_supervision
+        deep_supervision=deep_supervision,
+        **kwargs
     )

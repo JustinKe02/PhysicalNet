@@ -12,7 +12,7 @@ Supported models (via segmentation_models_pytorch):
   - deeplabv3p_r18 DeepLabV3+ with ResNet-18 encoder
   - pspnet_r18     PSPNet with ResNet-18 encoder
   - fpn_r18        FPN with ResNet-18 encoder
-  - segformer_b0   SegFormer-B0 (mit_b0 encoder)
+  - unet_mit_b0      U-Net with MiT-B0 encoder (mit_b0 encoder)
   - bisenetv2      BiSeNet V2 (custom lightweight)
 
 Usage:
@@ -74,7 +74,7 @@ def build_model(model_name, num_classes=4):
             encoder_name='resnet18', encoder_weights='imagenet',
             in_channels=3, classes=num_classes,
         ),
-        'segformer_b0': lambda: smp.Unet(
+        'unet_mit_b0': lambda: smp.Unet(
             encoder_name='mit_b0', encoder_weights='imagenet',
             in_channels=3, classes=num_classes,
         ),
@@ -93,7 +93,7 @@ def build_model(model_name, num_classes=4):
 
 ALL_MODELS = [
     'unet_r18', 'deeplabv3p_mv2', 'deeplabv3p_r18',
-    'pspnet_r18', 'fpn_r18', 'segformer_b0',
+    'pspnet_r18', 'fpn_r18', 'unet_mit_b0',
 ]
 
 
@@ -207,6 +207,7 @@ def validate(model, val_loader, criterion, device):
     metrics = SegmentationMetrics(4)
     total_loss = total_ce = total_dice = 0
     num_images = 0
+    loss_images = 0
 
     for images_list, masks_list in val_loader:
         for img_tensor, mask_tensor in zip(images_list, masks_list):
@@ -228,8 +229,9 @@ def validate(model, val_loader, criterion, device):
                 total_loss += loss.item()
                 total_ce += ce_loss.item()
                 total_dice += dice_loss.item()
+                loss_images += 1
                 prediction = logits.argmax(dim=1)[0].cpu().numpy()
-            except (torch.cuda.OutOfMemoryError, RuntimeError):
+            except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
                 prediction = sliding_window_predict(
                     model, img_tensor, crop_size=512, stride=384, device=device
@@ -242,10 +244,10 @@ def validate(model, val_loader, criterion, device):
             num_images += 1
 
     results = metrics.get_results()
-    if num_images > 0:
-        results['val_loss'] = total_loss / num_images
-        results['val_ce'] = total_ce / num_images
-        results['val_dice'] = total_dice / num_images
+    if loss_images > 0:
+        results['val_loss'] = total_loss / loss_images
+        results['val_ce'] = total_ce / loss_images
+        results['val_dice'] = total_dice / loss_images
     return results
 
 
@@ -274,6 +276,9 @@ def get_args():
 
 def train_single_model(model_name, args):
     """Train a single baseline model."""
+    import random, numpy as np
+    random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
