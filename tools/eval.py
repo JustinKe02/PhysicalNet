@@ -1,17 +1,21 @@
 """
-RepELA-Net Evaluation Script.
+Unified Evaluation Script for RepELA-Net, smp baselines, and ablation variants.
 
-Dedicated evaluation: computes mIoU, per-class IoU, F1, pixel accuracy
-on a specified split using deterministic sliding-window inference.
+Computes mIoU, per-class IoU, F1, pixel accuracy on a specified split
+using deterministic sliding-window inference.
 
-Usage:
-    # Evaluate on val set
-    python tools/eval.py --data_root Mos2_data --split val \
-        --checkpoint output/repela_small_*/best_model.pth
+Usage (from project root):
+    # RepELA-Small on test set
+    python tools/eval.py --model repela_small --split test \
+        --checkpoint output/.../best_model.pth
 
-    # Evaluate on test set
-    python tools/eval.py --data_root Mos2_data --split test \
-        --checkpoint output/repela_small_*/best_model.pth
+    # smp baseline
+    python tools/eval.py --model unet_r18 --split test \
+        --checkpoint output/baselines/.../best_model.pth
+
+    # Ablation variant
+    python tools/eval.py --model repela_small --ablation no_ela --split test \
+        --checkpoint output/ablation/.../best_model.pth
 """
 
 import sys
@@ -39,7 +43,27 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base, infer_use_cse
+from train_ablation import build_ablation_model, ALL_ABLATIONS, ABLATION_NAMES
 from utils.metrics import SegmentationMetrics
+
+# ── Model Registry (mirrors tools/train.py) ──
+REPELA_MODELS = {
+    'repela_tiny': repela_net_tiny,
+    'repela_small': repela_net_small,
+    'repela_base': repela_net_base,
+}
+
+SMP_MODEL_SPECS = {
+    'unet_r18':      ('Unet',          'resnet18'),
+    'unet_r34':      ('Unet',          'resnet34'),
+    'deeplabv3p_r18':('DeepLabV3Plus',  'resnet18'),
+    'deeplabv3p_mv2':('DeepLabV3Plus',  'mobilenet_v2'),
+    'pspnet_r18':    ('PSPNet',         'resnet18'),
+    'fpn_r18':       ('FPN',            'resnet18'),
+    'unet_mit_b0':   ('Unet',          'mit_b0'),
+}
+
+ALL_MODEL_NAMES = list(REPELA_MODELS.keys()) + list(SMP_MODEL_SPECS.keys())
 
 CLASSES = ['background', 'monolayer', 'fewlayer', 'multilayer']
 CLASS_LABELS_SHORT = ['BG', '1L', '2L', 'ML']  # For confusion matrix axis
@@ -92,16 +116,25 @@ def load_split(split_dir, split):
 
 
 @torch.no_grad()
-def predict_full_image(model, img_tensor, device):
+def predict_full_image(model, img_tensor, device, is_smp=False):
     """Full-image inference (no sliding window).
 
     Sends the entire image through the model at once.
+    For smp models, pads input to multiple of 32.
     Returns: prediction [H,W] numpy int array, or None if OOM.
     """
     try:
+        _, H, W = img_tensor.shape
         img = img_tensor.unsqueeze(0).to(device)
+        if is_smp:
+            pad_h = (32 - H % 32) % 32
+            pad_w = (32 - W % 32) % 32
+            if pad_h > 0 or pad_w > 0:
+                img = F.pad(img, [0, pad_w, 0, pad_h], mode='reflect')
         output = model(img)
         logits = output[0] if isinstance(output, tuple) else output
+        if is_smp:
+            logits = logits[:, :, :H, :W]
         pred = logits.argmax(dim=1)[0].cpu().numpy()
         return pred
     except torch.cuda.OutOfMemoryError:
@@ -156,10 +189,10 @@ def sliding_window_predict(model, img_tensor, crop_size, stride, device):
     return (pred_sum / count.unsqueeze(0)).argmax(dim=0).cpu().numpy()
 
 
-def smart_predict(model, img_tensor, crop_size, stride, device, use_full=True):
+def smart_predict(model, img_tensor, crop_size, stride, device, use_full=True, is_smp=False):
     """Try full-image inference first, fallback to sliding window on OOM."""
     if use_full:
-        pred = predict_full_image(model, img_tensor, device)
+        pred = predict_full_image(model, img_tensor, device, is_smp=is_smp)
         if pred is not None:
             return pred, 'full'
     pred = sliding_window_predict(model, img_tensor, crop_size, stride, device)
@@ -213,12 +246,30 @@ def predict_tta(model, img_tensor, device):
     return prob_sum.argmax(dim=0).cpu().numpy()
 
 
+def _build_smp_model(model_name, num_classes):
+    """Lazily import smp and build a baseline model."""
+    try:
+        import segmentation_models_pytorch as smp
+    except ImportError:
+        raise ImportError(
+            f'segmentation_models_pytorch is required for "{model_name}". '
+            f'Install with: pip install segmentation-models-pytorch')
+    arch, encoder = SMP_MODEL_SPECS[model_name]
+    cls = getattr(smp, arch)
+    return cls(encoder_name=encoder, encoder_weights='imagenet',
+               in_channels=3, classes=num_classes)
+
+
 def main():
-    parser = argparse.ArgumentParser(description='RepELA-Net Evaluation')
+    parser = argparse.ArgumentParser(description='Unified Evaluation')
     parser.add_argument('--data_root', type=str, default='Mos2_data')
     parser.add_argument('--split_dir', type=str, default='splits/')
     parser.add_argument('--split', type=str, default='val', choices=['val', 'test', 'train'])
-    parser.add_argument('--model', type=str, default='small', choices=['tiny', 'small', 'base'])
+    parser.add_argument('--model', type=str, default='repela_small',
+                        choices=ALL_MODEL_NAMES)
+    parser.add_argument('--ablation', type=str, default=None,
+                        choices=ALL_ABLATIONS + [None],
+                        help='Ablation variant (only with repela_small)')
     parser.add_argument('--checkpoint', type=str, required=True)
     parser.add_argument('--deploy_model', type=str, default=None)
     parser.add_argument('--num_classes', type=int, default=4)
@@ -227,39 +278,61 @@ def main():
     parser.add_argument('--output', type=str, default=None,
                         help='Output dir for per-image results (optional)')
     parser.add_argument('--tta', action='store_true', default=False,
-                        help='Enable test-time augmentation (4x slower, ~+0.5-1%% mIoU)')
+                        help='Enable test-time augmentation')
     parser.add_argument('--use_cse', action=argparse.BooleanOptionalAction, default=False,
-                        help='Enable ColorSpaceEnhancement (--use_cse / --no-use_cse)')
+                        help='Enable ColorSpaceEnhancement')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    is_smp = args.model in SMP_MODEL_SPECS
     print(f'Device: {device}')
 
-    # Load model
-    model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
-                'base': repela_net_base}[args.model]
-
-    # Auto-restore use_cse from checkpoint (args first, then state_dict inspection)
-    use_cse = args.use_cse
-    if args.deploy_model:
-        model = model_fn(num_classes=args.num_classes, deploy=True,
-                         use_cse=use_cse).to(device)
-        sd = torch.load(args.deploy_model, map_location=device, weights_only=True)
-        model.load_state_dict(sd, strict=False)
-        print(f'Loaded deploy model: {args.deploy_model} (use_cse={use_cse})')
-    else:
+    # ── Build model ──
+    if args.ablation:
+        # Ablation variant
         ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-        use_cse = infer_use_cse(ckpt, cli_use_cse=args.use_cse)
-        print(f'Inferred use_cse={use_cse}')
-        model = model_fn(num_classes=args.num_classes,
-                         use_cse=use_cse).to(device)
+        model = build_ablation_model(args.ablation, args.num_classes,
+                                     deep_supervision=False)
         model.load_state_dict(ckpt['model'], strict=False)
-        print(f'Loaded: {args.checkpoint} (Epoch {ckpt["epoch"]+1}, '
-              f'mIoU={ckpt.get("best_miou", "?"):.4f})')
+        model_display = ABLATION_NAMES.get(args.ablation, args.ablation)
+        print(f'Loaded ablation: {model_display}')
+        print(f'  Checkpoint: {args.checkpoint}')
 
+    elif is_smp:
+        # smp baseline
+        model = _build_smp_model(args.model, args.num_classes)
+        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        sd = ckpt['model'] if 'model' in ckpt else ckpt
+        model.load_state_dict(sd, strict=False)
+        model_display = args.model
+        print(f'Loaded smp model: {args.model}')
+        print(f'  Checkpoint: {args.checkpoint}')
+
+    elif args.model in REPELA_MODELS:
+        # RepELA-Net
+        model_fn = REPELA_MODELS[args.model]
+        if args.deploy_model:
+            use_cse = args.use_cse
+            model = model_fn(num_classes=args.num_classes, deploy=True,
+                             use_cse=use_cse)
+            sd = torch.load(args.deploy_model, map_location=device, weights_only=True)
+            model.load_state_dict(sd, strict=False)
+            print(f'Loaded deploy model: {args.deploy_model}')
+        else:
+            ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+            use_cse = infer_use_cse(ckpt, cli_use_cse=args.use_cse)
+            model = model_fn(num_classes=args.num_classes, use_cse=use_cse)
+            model.load_state_dict(ckpt['model'], strict=False)
+            print(f'Loaded: {args.checkpoint} (Epoch {ckpt["epoch"]+1}, '
+                  f'mIoU={ckpt.get("best_miou", "?"):.4f})')
+        model_display = f'RepELA-Net-{args.model.split("_")[1].title()}'
+    else:
+        raise ValueError(f'Unknown model: {args.model}')
+
+    model = model.to(device)
     model.eval()
     params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f'Model: RepELA-Net-{args.model}, {params:.2f}M params')
+    print(f'Model: {model_display}, {params:.2f}M params')
 
     # Load split
     basenames = load_split(args.split_dir, args.split)
@@ -289,7 +362,7 @@ def main():
             pred = predict_tta(model, img_tensor, device)
             method = 'tta'
         else:
-            pred, method = smart_predict(model, img_tensor, args.crop_size, args.stride, device)
+            pred, method = smart_predict(model, img_tensor, args.crop_size, args.stride, device, is_smp=is_smp)
         elapsed = time.time() - t0
         total_time += elapsed
 
@@ -315,7 +388,7 @@ def main():
     # Overall results
     results = metrics.get_results()
     print(f'\n{"=" * 60}')
-    print(f'RepELA-Net-{args.model} | {args.split} set | {len(basenames)} images')
+    print(f'{model_display} | {args.split} set | {len(basenames)} images')
     print(f'Sliding window: crop={args.crop_size}, stride={args.stride}')
     print(f'{"=" * 60}')
     print(f'  mIoU:       {results["mIoU"]:.4f}')

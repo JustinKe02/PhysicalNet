@@ -152,10 +152,10 @@ def build_ablation_model(ablation, num_classes=4, deep_supervision=True):
         raise ValueError(f'Unknown ablation: {ablation}')
 
 
-ALL_ABLATIONS = ['with_cse', 'no_ela', 'no_rep', 'no_boundary', 'no_dwmff']
+ALL_ABLATIONS = ['no_ela', 'no_rep', 'no_boundary', 'no_dwmff']
 
 ABLATION_NAMES = {
-    'with_cse': '+ ColorSpaceEnhancement',
+    'with_cse': '+ ColorSpaceEnhancement',  # kept for backward compat but not in ALL_ABLATIONS
     'no_ela': 'w/o ELA (Linear Attention)',
     'no_rep': 'w/o RepConv (Reparameterization)',
     'no_boundary': 'w/o BoundaryEnhancement',

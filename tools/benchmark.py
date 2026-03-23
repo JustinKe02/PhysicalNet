@@ -37,6 +37,25 @@ from models.repela_net import (
     RepELANet, repela_net_tiny, repela_net_small, repela_net_base
 )
 
+# smp baselines (mirrors tools/train.py)
+SMP_MODEL_SPECS = {
+    'unet_r18':      ('Unet',          'resnet18'),
+    'unet_r34':      ('Unet',          'resnet34'),
+    'deeplabv3p_r18':('DeepLabV3Plus',  'resnet18'),
+    'deeplabv3p_mv2':('DeepLabV3Plus',  'mobilenet_v2'),
+    'pspnet_r18':    ('PSPNet',         'resnet18'),
+    'fpn_r18':       ('FPN',            'resnet18'),
+    'unet_mit_b0':   ('Unet',          'mit_b0'),
+}
+
+
+def _build_smp_model(model_name, num_classes):
+    import segmentation_models_pytorch as smp
+    arch, encoder = SMP_MODEL_SPECS[model_name]
+    cls = getattr(smp, arch)
+    return cls(encoder_name=encoder, encoder_weights='imagenet',
+               in_channels=3, classes=num_classes)
+
 
 def count_parameters(model):
     """Count total and trainable parameters."""
@@ -234,16 +253,60 @@ def benchmark_model(name, model_fn, args, device):
     return train_results, deploy_results
 
 
+def benchmark_smp_model(name, model_name, args, device):
+    """Run benchmark on an smp baseline model (no deploy mode)."""
+    print(f"\n{'='*60}")
+    print(f"  {name}")
+    print(f"{'='*60}")
+
+    model = _build_smp_model(model_name, args.num_classes).to(device)
+    model.eval()
+
+    total_params, _ = count_parameters(model)
+    print(f"\n  Parameters:     {format_num(total_params)} ({total_params/1e6:.2f}M)")
+
+    flops, _ = count_flops(model, args.input_size, device)
+    if flops:
+        print(f"  FLOPs:          {format_num(flops)} @{args.input_size}x{args.input_size}")
+        print(f"  MACs:           {format_num(flops/2)}")
+
+    avg_lat, med_lat, fps, min_lat, max_lat = measure_latency(
+        model, args.input_size, device, warmup=args.warmup, runs=args.runs
+    )
+    print(f"  Latency (avg):  {avg_lat:.2f} ms")
+    print(f"  FPS:            {fps:.1f}")
+
+    peak_mem, delta_mem = measure_memory(model, args.input_size, device)
+    if peak_mem:
+        print(f"  Peak Memory:    {peak_mem:.1f} MB")
+
+    size_mb = measure_model_size(model)
+    print(f"  Model Size:     {size_mb:.2f} MB")
+
+    results = {
+        'params': total_params, 'flops': flops,
+        'latency': avg_lat, 'fps': fps,
+        'memory': peak_mem, 'size': size_mb
+    }
+
+    del model
+    torch.cuda.empty_cache()
+    return results
+
+
 def main():
-    parser = argparse.ArgumentParser(description='RepELA-Net Benchmark')
+    parser = argparse.ArgumentParser(description='Model Benchmark')
     parser.add_argument('--input_size', type=int, default=512)
     parser.add_argument('--num_classes', type=int, default=4)
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--warmup', type=int, default=50)
     parser.add_argument('--runs', type=int, default=200)
     parser.add_argument('--variants', type=str, nargs='+',
-                        default=['tiny', 'small', 'base'],
+                        default=['small'],
                         choices=['tiny', 'small', 'base'])
+    parser.add_argument('--baselines', type=str, nargs='*', default=None,
+                        choices=list(SMP_MODEL_SPECS.keys()),
+                        help='smp baselines to benchmark (omit for none, empty for all)')
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -252,49 +315,59 @@ def main():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     print(f"Input: {args.input_size}x{args.input_size}, Classes: {args.num_classes}")
 
-    model_fns = {
+    repela_fns = {
         'tiny': ('RepELA-Net-Tiny', repela_net_tiny),
         'small': ('RepELA-Net-Small', repela_net_small),
         'base': ('RepELA-Net-Base', repela_net_base),
     }
 
-    all_results = {}
+    # ── RepELA-Net variants ──
+    repela_results = {}
     for variant in args.variants:
-        name, fn = model_fns[variant]
+        name, fn = repela_fns[variant]
         train_r, deploy_r = benchmark_model(name, fn, args, device)
-        all_results[variant] = (train_r, deploy_r)
+        repela_results[variant] = (name, train_r, deploy_r)
 
-    # Summary table
-    print(f"\n{'='*60}")
+    # ── smp baselines ──
+    smp_results = {}
+    if args.baselines is not None:
+        baseline_list = args.baselines if args.baselines else list(SMP_MODEL_SPECS.keys())
+        for bl in baseline_list:
+            r = benchmark_smp_model(bl, bl, args, device)
+            smp_results[bl] = r
+
+    # ── Summary table ──
+    print(f"\n{'='*70}")
     print(f"  SUMMARY TABLE @{args.input_size}x{args.input_size}")
-    print(f"{'='*60}")
-    header = f"{'Model':<22} {'Params':>8} {'FLOPs':>8} {'FPS':>8} {'Lat(ms)':>8} {'Mem(MB)':>8} {'Size(MB)':>8}"
+    print(f"{'='*70}")
+    header = f"{'Model':<25} {'Params':>8} {'FLOPs':>8} {'FPS':>8} {'Lat(ms)':>8} {'Mem(MB)':>8}"
     print(header)
     print("-" * len(header))
 
     for variant in args.variants:
-        train_r, deploy_r = all_results[variant]
-        name, _ = model_fns[variant]
-
-        # Train mode row
-        print(f"{name+' (train)':<22} "
+        name, train_r, deploy_r = repela_results[variant]
+        print(f"{name+' (train)':<25} "
               f"{format_num(train_r['params']):>8} "
               f"{format_num(train_r['flops']) if train_r['flops'] else 'N/A':>8} "
               f"{train_r['fps']:>8.1f} "
               f"{train_r['latency']:>8.2f} "
-              f"{train_r['memory'] or 0:>8.1f} "
-              f"{train_r['size']:>8.2f}")
-
-        # Deploy mode row
-        print(f"{name+' (deploy)':<22} "
+              f"{train_r['memory'] or 0:>8.1f}")
+        print(f"{name+' (deploy)':<25} "
               f"{format_num(deploy_r['params']):>8} "
               f"{format_num(deploy_r['flops']) if deploy_r['flops'] else 'N/A':>8} "
               f"{deploy_r['fps']:>8.1f} "
               f"{deploy_r['latency']:>8.2f} "
-              f"{deploy_r['memory'] or 0:>8.1f} "
-              f"{deploy_r['size']:>8.2f}")
-        print()
+              f"{deploy_r['memory'] or 0:>8.1f}")
 
+    for bl, r in smp_results.items():
+        print(f"{bl:<25} "
+              f"{format_num(r['params']):>8} "
+              f"{format_num(r['flops']) if r['flops'] else 'N/A':>8} "
+              f"{r['fps']:>8.1f} "
+              f"{r['latency']:>8.2f} "
+              f"{r['memory'] or 0:>8.1f}")
+
+    print(f"{'='*70}")
 
 if __name__ == '__main__':
     main()
