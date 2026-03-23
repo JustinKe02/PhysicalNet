@@ -51,9 +51,9 @@ from utils.metrics import SegmentationMetrics
 # ═══════════════════════════════════════════════════════════════════════
 
 REPELA_MODELS = {
-    'repela_tiny': lambda nc, ds: repela_net_tiny(num_classes=nc, deep_supervision=ds),
-    'repela_small': lambda nc, ds: repela_net_small(num_classes=nc, deep_supervision=ds),
-    'repela_base': lambda nc, ds: repela_net_base(num_classes=nc, deep_supervision=ds),
+    'repela_tiny': lambda nc, ds, cse: repela_net_tiny(num_classes=nc, deep_supervision=ds, use_cse=cse),
+    'repela_small': lambda nc, ds, cse: repela_net_small(num_classes=nc, deep_supervision=ds, use_cse=cse),
+    'repela_base': lambda nc, ds, cse: repela_net_base(num_classes=nc, deep_supervision=ds, use_cse=cse),
 }
 
 # smp baselines — built lazily to avoid hard dependency
@@ -141,6 +141,8 @@ def get_args():
                    help='Use EMA model for validation (--ema / --no-ema)')
     p.add_argument('--ema_decay', type=float, default=0.9995)
     p.add_argument('--early_stop_patience', type=int, default=30)
+    p.add_argument('--use_cse', action=argparse.BooleanOptionalAction, default=False,
+                   help='Enable ColorSpaceEnhancement (--use_cse / --no-use_cse)')
     p.add_argument('--resume', type=str, default=None)
 
     return p.parse_args()
@@ -230,7 +232,7 @@ def build_model(args):
     """Build model from args. Returns (model, display_name, has_deep_sup)."""
     nc = args.num_classes
 
-    # Ablation (including 'full' which is the reference)
+    # Ablation (e.g. with_cse, no_ela, etc.)
     if args.ablation:
         model = build_ablation_model(args.ablation, nc,
                                      deep_supervision=args.deep_supervision)
@@ -240,8 +242,9 @@ def build_model(args):
 
     # RepELA-Net
     if args.model in REPELA_MODELS:
-        model = REPELA_MODELS[args.model](nc, args.deep_supervision)
-        name = f'RepELA-Net-{args.model.split("_")[1].title()}'
+        model = REPELA_MODELS[args.model](nc, args.deep_supervision, args.use_cse)
+        cse_tag = '+CSE' if args.use_cse else ''
+        name = f'RepELA-Net-{args.model.split("_")[1].title()}{cse_tag}'
         has_ds = args.deep_supervision
         return model, name, has_ds
 
@@ -640,7 +643,7 @@ def train_single(args):
     logger.info(f'Done. Best mIoU: {best_miou:.4f}')
 
     # Deploy model (RepELA-Net only)
-    if args.model in REPELA_MODELS and (not args.ablation or args.ablation == 'full'):
+    if args.model in REPELA_MODELS and (not args.ablation or args.ablation == 'with_cse'):
         try:
             # Use EMA weights for deploy if available
             deploy_model = ema.ema if ema else model

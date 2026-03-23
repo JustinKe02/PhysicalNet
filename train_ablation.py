@@ -5,10 +5,9 @@ Creates model variants with specific components disabled to measure
 each module's contribution to overall performance.
 
 Ablation variants:
-  full         Complete RepELA-Net-Small (baseline)
+  with_cse     + ColorSpaceEnhancement (use_cse=True)
   no_ela       Replace ELA stages with RepConv stages (no attention)
   no_rep       Replace RepConvBN with standard Conv+BN (no reparameterization)
-  no_color     Skip ColorSpaceEnhancement (3-channel input)
   no_boundary  Remove BoundaryEnhancement from decoder
   no_dwmff     Replace DynamicWeightedFusion with simple addition
 
@@ -47,10 +46,11 @@ from models.decoder import DWMFFDecoder, DynamicWeightedFusion, BoundaryEnhancem
 def build_ablation_model(ablation, num_classes=4, deep_supervision=True):
     """Build a RepELA-Net-Small variant with one component disabled."""
 
-    if ablation == 'full':
-        # Full RepELA-Net-Small (baseline for comparison)
+    if ablation == 'with_cse':
+        # RepELA-Net-Small with CSE enabled
         from models.repela_net import repela_net_small
-        return repela_net_small(num_classes=num_classes, deep_supervision=deep_supervision)
+        return repela_net_small(num_classes=num_classes, deep_supervision=deep_supervision,
+                                use_cse=True)
 
     elif ablation == 'no_ela':
         # Replace ELA stages (3,4) with RepConv stages (no attention)
@@ -94,26 +94,6 @@ def build_ablation_model(ablation, num_classes=4, deep_supervision=True):
                 for p in parts[:-1]:
                     parent = getattr(parent, p) if not p.isdigit() else parent[int(p)]
                 setattr(parent, parts[-1], std_conv)
-        return model
-
-    elif ablation == 'no_color':
-        # Replace ColorSpaceEnhancement with zero-filled 4th channel
-        # This keeps the Stem input as 4 channels (same params) but removes HSV info
-        model = RepELANet(
-            num_classes=num_classes,
-            channels=(32, 64, 128, 256),
-            num_blocks=(2, 2, 4, 2),
-            num_heads=(0, 0, 4, 8),
-            decoder_channels=128,
-            deep_supervision=deep_supervision,
-        )
-        class ZeroPadChannel(nn.Module):
-            """Replace saturation with a zero channel to keep 4ch input."""
-            def forward(self, x):
-                zeros = torch.zeros(x.shape[0], 1, x.shape[2], x.shape[3],
-                                    device=x.device, dtype=x.dtype)
-                return torch.cat([x, zeros], dim=1)
-        model.color_enhance = ZeroPadChannel()
         return model
 
     elif ablation == 'no_boundary':
@@ -163,13 +143,12 @@ def build_ablation_model(ablation, num_classes=4, deep_supervision=True):
         raise ValueError(f'Unknown ablation: {ablation}')
 
 
-ALL_ABLATIONS = ['full', 'no_ela', 'no_rep', 'no_color', 'no_boundary', 'no_dwmff']
+ALL_ABLATIONS = ['with_cse', 'no_ela', 'no_rep', 'no_boundary', 'no_dwmff']
 
 ABLATION_NAMES = {
-    'full': 'RepELA-Net-Small (Full)',
+    'with_cse': '+ ColorSpaceEnhancement',
     'no_ela': 'w/o ELA (Linear Attention)',
     'no_rep': 'w/o RepConv (Reparameterization)',
-    'no_color': 'w/o ColorSpaceEnhancement',
     'no_boundary': 'w/o BoundaryEnhancement',
     'no_dwmff': 'w/o DW-MFF (Dynamic Fusion)',
 }
@@ -301,7 +280,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Ablation Study Training')
     parser.add_argument('--data_root', type=str, default='./Mos2_data')
     parser.add_argument('--split_dir', type=str, default='splits/')
-    parser.add_argument('--ablation', type=str, default='full',
+    parser.add_argument('--ablation', type=str, default='with_cse',
                         help=f'Ablation variant or "all". Options: {", ".join(ALL_ABLATIONS)}')
     parser.add_argument('--num_classes', type=int, default=4)
     parser.add_argument('--crop_size', type=int, default=512)

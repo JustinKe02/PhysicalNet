@@ -35,7 +35,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base
+from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base, infer_use_cse
+from train_ablation import build_ablation_model
 
 CLASSES = ['background', 'monolayer', 'fewlayer', 'multilayer']
 CLASS_COLORS = np.array([
@@ -80,7 +81,9 @@ def sliding_window_predict(model, img_tensor, crop_size, stride, device):
         for x in xs:
             crop = img_tensor[:, y:y+crop_size, x:x+crop_size].unsqueeze(0).to(device)
             with torch.no_grad():
-                probs = F.softmax(model(crop), dim=1)[0]
+                output = model(crop)
+                logits = output[0] if isinstance(output, tuple) else output
+                probs = F.softmax(logits, dim=1)[0]
             y_end = min(y + crop_size, H)
             x_end = min(x + crop_size, W)
             pred_sum[:, y:y_end, x:x_end] += probs[:, :y_end-y, :x_end-x]
@@ -128,19 +131,41 @@ def visualize_result(image_np, prediction, save_path, gt_mask=None):
 
 
 def load_model(args, device):
-    model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
-                'base': repela_net_base}[args.model]
-
-    if args.deploy_model:
-        model = model_fn(num_classes=args.num_classes, deploy=True).to(device)
-        sd = torch.load(args.deploy_model, map_location=device, weights_only=True)
-        model.load_state_dict(sd, strict=False)
-        print(f'Loaded deploy model: {args.deploy_model}')
+    # Ablation model (e.g. no_color)
+    if args.ablation:
+        if args.deploy_model:
+            model = build_ablation_model(args.ablation, num_classes=args.num_classes,
+                                          deep_supervision=False).to(device)
+            model.switch_to_deploy()
+            sd = torch.load(args.deploy_model, map_location=device, weights_only=True)
+            model.load_state_dict(sd, strict=False)
+            print(f'Loaded deploy model: {args.deploy_model} (ablation={args.ablation})')
+        else:
+            ds = getattr(args, 'deep_supervision', False)
+            model = build_ablation_model(args.ablation, num_classes=args.num_classes,
+                                          deep_supervision=ds).to(device)
+            ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+            model.load_state_dict(ckpt['model'], strict=True)
+            print(f'Loaded: {args.checkpoint} (ablation={args.ablation}, Epoch {ckpt["epoch"]+1})')
     else:
-        model = model_fn(num_classes=args.num_classes).to(device)
-        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt['model'], strict=False)
-        print(f'Loaded: {args.checkpoint} (Epoch {ckpt["epoch"]+1})')
+        use_cse = getattr(args, 'use_cse', False)
+        model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
+                    'base': repela_net_base}[args.model]
+
+        if args.deploy_model:
+            model = model_fn(num_classes=args.num_classes, deploy=True,
+                             use_cse=use_cse).to(device)
+            sd = torch.load(args.deploy_model, map_location=device, weights_only=True)
+            model.load_state_dict(sd, strict=False)
+            print(f'Loaded deploy model: {args.deploy_model} (use_cse={use_cse})')
+        else:
+            ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+            use_cse = infer_use_cse(ckpt, cli_use_cse=use_cse)
+            print(f'Inferred use_cse={use_cse}')
+            model = model_fn(num_classes=args.num_classes,
+                             use_cse=use_cse).to(device)
+            model.load_state_dict(ckpt['model'], strict=False)
+            print(f'Loaded: {args.checkpoint} (Epoch {ckpt["epoch"]+1})')
 
     model.eval()
     return model
@@ -192,6 +217,12 @@ def main():
     parser.add_argument('--checkpoint', type=str, default=None)
     parser.add_argument('--deploy_model', type=str, default=None)
     parser.add_argument('--num_classes', type=int, default=4)
+    parser.add_argument('--ablation', type=str, default=None,
+                        help='Ablation variant (e.g. no_color)')
+    parser.add_argument('--deep_supervision', action='store_true', default=False,
+                        help='Enable deep supervision (match training config)')
+    parser.add_argument('--use_cse', action=argparse.BooleanOptionalAction, default=False,
+                        help='Enable ColorSpaceEnhancement (--use_cse / --no-use_cse)')
 
     # Sliding window (default ON for 2560x1922 images)
     parser.add_argument('--crop_size', type=int, default=512)

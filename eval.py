@@ -29,7 +29,7 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
-from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base
+from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base, infer_use_cse
 from utils.metrics import SegmentationMetrics
 
 CLASSES = ['background', 'monolayer', 'fewlayer', 'multilayer']
@@ -91,7 +91,8 @@ def predict_full_image(model, img_tensor, device):
     """
     try:
         img = img_tensor.unsqueeze(0).to(device)
-        logits = model(img)
+        output = model(img)
+        logits = output[0] if isinstance(output, tuple) else output
         pred = logits.argmax(dim=1)[0].cpu().numpy()
         return pred
     except torch.cuda.OutOfMemoryError:
@@ -134,7 +135,9 @@ def sliding_window_predict(model, img_tensor, crop_size, stride, device):
         for x in xs:
             crop = img_tensor[:, y:y+crop_size, x:x+crop_size].unsqueeze(0).to(device)
             with torch.no_grad():
-                probs = F.softmax(model(crop), dim=1)[0]
+                output = model(crop)
+                logits = output[0] if isinstance(output, tuple) else output
+                probs = F.softmax(logits, dim=1)[0]
             y_end = min(y + crop_size, H)
             x_end = min(x + crop_size, W)
             pred_sum[:, y:y_end, x:x_end] += probs[:, :y_end-y, :x_end-x]
@@ -216,6 +219,8 @@ def main():
                         help='Output dir for per-image results (optional)')
     parser.add_argument('--tta', action='store_true', default=False,
                         help='Enable test-time augmentation (4x slower, ~+0.5-1%% mIoU)')
+    parser.add_argument('--use_cse', action=argparse.BooleanOptionalAction, default=False,
+                        help='Enable ColorSpaceEnhancement (--use_cse / --no-use_cse)')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -225,14 +230,20 @@ def main():
     model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
                 'base': repela_net_base}[args.model]
 
+    # Auto-restore use_cse from checkpoint (args first, then state_dict inspection)
+    use_cse = args.use_cse
     if args.deploy_model:
-        model = model_fn(num_classes=args.num_classes, deploy=True).to(device)
+        model = model_fn(num_classes=args.num_classes, deploy=True,
+                         use_cse=use_cse).to(device)
         sd = torch.load(args.deploy_model, map_location=device, weights_only=True)
         model.load_state_dict(sd, strict=False)
-        print(f'Loaded deploy model: {args.deploy_model}')
+        print(f'Loaded deploy model: {args.deploy_model} (use_cse={use_cse})')
     else:
-        model = model_fn(num_classes=args.num_classes).to(device)
         ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        use_cse = infer_use_cse(ckpt, cli_use_cse=args.use_cse)
+        print(f'Inferred use_cse={use_cse}')
+        model = model_fn(num_classes=args.num_classes,
+                         use_cse=use_cse).to(device)
         model.load_state_dict(ckpt['model'], strict=False)
         print(f'Loaded: {args.checkpoint} (Epoch {ckpt["epoch"]+1}, '
               f'mIoU={ckpt.get("best_miou", "?"):.4f})')

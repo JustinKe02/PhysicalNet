@@ -64,12 +64,53 @@ class ColorSpaceEnhancement(nn.Module):
         return enhanced
 
 
+class ZeroPadChannel(nn.Module):
+    """Replace CSE with a zero-filled 4th channel.
+
+    Keeps the Stem input as 4 channels (same architecture) but without
+    color space features. This is the default for RepELA-Net (w/o CSE).
+    """
+    def forward(self, x):
+        zeros = torch.zeros(x.shape[0], 1, x.shape[2], x.shape[3],
+                            device=x.device, dtype=x.dtype)
+        return torch.cat([x, zeros], dim=1)
+
+
+def infer_use_cse(checkpoint, cli_use_cse=False):
+    """Infer use_cse from a checkpoint dict.
+
+    Priority:
+        1. checkpoint['args']['use_cse'] (new checkpoints)
+        2. 'color_enhance.s_weight' in state_dict (old CSE checkpoints)
+        3. cli_use_cse fallback (default False)
+
+    Args:
+        checkpoint: loaded checkpoint dict (must have 'model' key)
+        cli_use_cse: fallback value from CLI
+
+    Returns:
+        bool: whether to enable CSE
+    """
+    # 1. Explicit args in checkpoint
+    ckpt_args = checkpoint.get('args', {})
+    if isinstance(ckpt_args, dict) and 'use_cse' in ckpt_args:
+        return ckpt_args['use_cse']
+
+    # 2. Infer from state_dict keys
+    sd = checkpoint.get('model', checkpoint)
+    if any('color_enhance.s_weight' in k for k in sd.keys()):
+        return True
+
+    # 3. CLI fallback
+    return cli_use_cse
+
+
 class RepELANet(nn.Module):
     """RepELA-Net: Complete lightweight segmentation model.
     
     Architecture overview:
         Input (512x512x3)
-        -> ColorSpaceEnhancement (512x512x4)
+        -> ZeroPadChannel / ColorSpaceEnhancement (512x512x4)
         -> Stem Conv (256x256xC1=32)
         -> RepConv Stage 1 (128x128xC1=32)
         -> RepConv Stage 2 (64x64xC2=64)
@@ -84,7 +125,8 @@ class RepELANet(nn.Module):
     def __init__(self, num_classes=4, channels=(32, 64, 128, 256),
                  num_blocks=(2, 2, 4, 2), num_heads=(0, 0, 4, 8),
                  decoder_channels=128, drop_rate=0.1, deploy=False,
-                 deep_supervision=False, norm_mean=None, norm_std=None):
+                 deep_supervision=False, use_cse=False,
+                 norm_mean=None, norm_std=None):
         """
         Args:
             num_classes: number of segmentation classes (4 for MoS2 dataset)
@@ -95,6 +137,8 @@ class RepELANet(nn.Module):
             drop_rate: dropout rate
             deploy: if True, use fused/deployed convolutions
             deep_supervision: if True, add auxiliary classification heads
+            use_cse: if True, use ColorSpaceEnhancement (HSV saturation);
+                     if False (default), use ZeroPadChannel (zero-filled 4th channel)
             norm_mean: RGB normalization mean for CSE denormalization (default: ImageNet)
             norm_std: RGB normalization std for CSE denormalization (default: ImageNet)
         """
@@ -102,8 +146,11 @@ class RepELANet(nn.Module):
         self.num_classes = num_classes
         c1, c2, c3, c4 = channels
 
-        # Color space enhancement
-        self.color_enhance = ColorSpaceEnhancement(norm_mean=norm_mean, norm_std=norm_std)
+        # Input channel expansion: 3ch RGB -> 4ch
+        if use_cse:
+            self.color_enhance = ColorSpaceEnhancement(norm_mean=norm_mean, norm_std=norm_std)
+        else:
+            self.color_enhance = ZeroPadChannel()
 
         # Stem: initial downsampling (4x4 -> 1/4 resolution)
         self.stem = nn.Sequential(
@@ -217,8 +264,8 @@ class RepELANet(nn.Module):
         return params, flops, params_str, flops_str
 
 
-def repela_net_tiny(num_classes=4, deploy=False, deep_supervision=False, **kwargs):
-    """RepELA-Net-Tiny: ~1.5M params."""
+def repela_net_tiny(num_classes=4, deploy=False, deep_supervision=False, use_cse=False, **kwargs):
+    """RepELA-Net-Tiny: ~1.13M params."""
     return RepELANet(
         num_classes=num_classes,
         channels=(24, 48, 96, 192),
@@ -228,12 +275,13 @@ def repela_net_tiny(num_classes=4, deploy=False, deep_supervision=False, **kwarg
         drop_rate=0.05,
         deploy=deploy,
         deep_supervision=deep_supervision,
+        use_cse=use_cse,
         **kwargs
     )
 
 
-def repela_net_small(num_classes=4, deploy=False, deep_supervision=False, **kwargs):
-    """RepELA-Net-Small: ~2.8M params (recommended for MoS2)."""
+def repela_net_small(num_classes=4, deploy=False, deep_supervision=False, use_cse=False, **kwargs):
+    """RepELA-Net-Small: ~2.12M params (recommended for MoS2)."""
     return RepELANet(
         num_classes=num_classes,
         channels=(32, 64, 128, 256),
@@ -243,12 +291,13 @@ def repela_net_small(num_classes=4, deploy=False, deep_supervision=False, **kwar
         drop_rate=0.1,
         deploy=deploy,
         deep_supervision=deep_supervision,
+        use_cse=use_cse,
         **kwargs
     )
 
 
-def repela_net_base(num_classes=4, deploy=False, deep_supervision=False, **kwargs):
-    """RepELA-Net-Base: ~5M params (higher accuracy)."""
+def repela_net_base(num_classes=4, deploy=False, deep_supervision=False, use_cse=False, **kwargs):
+    """RepELA-Net-Base: ~5.34M params (higher accuracy)."""
     return RepELANet(
         num_classes=num_classes,
         channels=(48, 96, 192, 384),
@@ -258,5 +307,6 @@ def repela_net_base(num_classes=4, deploy=False, deep_supervision=False, **kwarg
         drop_rate=0.1,
         deploy=deploy,
         deep_supervision=deep_supervision,
+        use_cse=use_cse,
         **kwargs
     )

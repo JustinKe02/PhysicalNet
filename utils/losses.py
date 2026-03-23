@@ -69,7 +69,8 @@ class FocalLoss(nn.Module):
 
         # Apply per-class alpha weights
         if self.alpha is not None:
-            alpha_t = self.alpha.gather(0, targets_clean.view(-1)).view_as(loss)
+            alpha = self.alpha.to(loss.device)
+            alpha_t = alpha.gather(0, targets_clean.view(-1)).view_as(loss)
             loss = alpha_t * loss
 
         # Mask out ignore pixels

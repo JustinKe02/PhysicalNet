@@ -51,7 +51,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base
+from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base, infer_use_cse
 from datasets.material_dataset import (MaterialDataset, collate_variable_size,
                                         compute_dataset_stats, get_auto_crop_size,
                                         IMAGENET_MEAN, IMAGENET_STD)
@@ -124,6 +124,8 @@ def get_args():
                         choices=list(DATASET_CONFIGS.keys()) + ['auto', 'none'],
                         help='Dataset class mapping for head init. '
                              'auto=infer from --name, none=random init')
+    parser.add_argument('--use_cse', action=argparse.BooleanOptionalAction, default=False,
+                        help='Enable ColorSpaceEnhancement (--use_cse / --no-use_cse)')
 
     return parser.parse_args()
 
@@ -266,7 +268,9 @@ def sliding_window_predict(model, img_tensor, crop_size, stride, device):
         for x in xs:
             crop = img_tensor[:, y:y+crop_size, x:x+crop_size].unsqueeze(0).to(device)
             with torch.no_grad():
-                probs = F.softmax(model(crop), dim=1)[0]
+                output = model(crop)
+                logits = output[0] if isinstance(output, tuple) else output
+                probs = F.softmax(logits, dim=1)[0]
             y_end = min(y + crop_size, H)
             x_end = min(x + crop_size, W)
             pred_sum[:, y:y_end, x:x_end] += probs[:, :y_end-y, :x_end-x]
@@ -312,6 +316,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, logger):
         masks = masks.to(device)
         optimizer.zero_grad()
         logits = model(images)
+        if isinstance(logits, tuple):
+            logits = logits[0]
         loss, _, _ = criterion(logits, masks)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -391,10 +397,16 @@ def main():
                               shuffle=True, num_workers=args.num_workers,
                               pin_memory=True, drop_last=True)
 
-    # Model
+    # Model — auto-restore use_cse from pretrained checkpoint
+    _tmp_ck = torch.load(args.pretrained, map_location='cpu', weights_only=False)
+    use_cse = infer_use_cse(_tmp_ck, cli_use_cse=args.use_cse)
+    logger.info(f'Inferred use_cse={use_cse}')
+    del _tmp_ck
+
     model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
                 'base': repela_net_base}[args.model]
     model = model_fn(num_classes=args.num_classes,
+                     use_cse=use_cse,
                      norm_mean=ds_mean, norm_std=ds_std).to(device)
 
     # Resolve dataset config for class mapping
