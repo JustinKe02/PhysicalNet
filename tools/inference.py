@@ -19,6 +19,10 @@ Usage:
         --checkpoint output/repela_small_*/best_model.pth
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import os
 import glob
 import time
