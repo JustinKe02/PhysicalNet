@@ -362,12 +362,14 @@ def main():
                 'name': name + ' (train)', 'params': train_r['params'],
                 'flops': train_r['flops'], 'gpu_fps': train_r['fps'],
                 'gpu_lat': train_r['latency'], 'gpu_mem': train_r['memory'],
+                'size': train_r.get('size', 0),
                 'cpu_fps': None, 'cpu_lat': None,
             })
             rows.append({
                 'name': name + ' (deploy)', 'params': deploy_r['params'],
                 'flops': deploy_r['flops'], 'gpu_fps': deploy_r['fps'],
                 'gpu_lat': deploy_r['latency'], 'gpu_mem': deploy_r['memory'],
+                'size': deploy_r.get('size', 0),
                 'cpu_fps': cpu_fps, 'cpu_lat': cpu_lat,
             })
 
@@ -398,14 +400,15 @@ def main():
             'name': bl, 'params': r['params'],
             'flops': r['flops'], 'gpu_fps': r['fps'],
             'gpu_lat': r['latency'], 'gpu_mem': r['memory'],
+            'size': r.get('size', 0),
             'cpu_fps': cpu_fps, 'cpu_lat': cpu_lat,
         })
 
     # ── Summary table ──
-    print(f"\n{'='*90}")
+    print(f"\n{'='*100}")
     print(f"  SUMMARY TABLE @{args.input_size}x{args.input_size}")
-    print(f"{'='*90}")
-    header = (f"{'Model':<25} {'Params':>8} {'FLOPs':>8} "
+    print(f"{'='*100}")
+    header = (f"{'Model':<25} {'Params':>8} {'FLOPs':>8} {'Size MB':>8} "
               f"{'GPU FPS':>8} {'GPU ms':>8} {'Mem MB':>8} "
               f"{'CPU FPS':>8} {'CPU ms':>8}")
     print(header)
@@ -417,16 +420,43 @@ def main():
         gpu_mem_s = f"{row['gpu_mem']:.1f}" if row['gpu_mem'] else 'N/A'
         cpu_fps_s = f"{row['cpu_fps']:.1f}" if row['cpu_fps'] else '-'
         cpu_lat_s = f"{row['cpu_lat']:.1f}" if row['cpu_lat'] else '-'
+        size_s = f"{row.get('size', 0):.2f}" if row.get('size') else 'N/A'
         print(f"{row['name']:<25} "
               f"{format_num(row['params']):>8} "
               f"{format_num(row['flops']) if row['flops'] else 'N/A':>8} "
+              f"{size_s:>8} "
               f"{gpu_fps_s:>8} "
               f"{gpu_lat_s:>8} "
               f"{gpu_mem_s:>8} "
               f"{cpu_fps_s:>8} "
               f"{cpu_lat_s:>8}")
 
-    print(f"{'='*90}")
+    print(f"{'='*100}")
+
+    # ── CSV export for paper ──
+    csv_path = f"benchmark_{args.input_size}.csv"
+    import csv
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Model', 'Params(M)', 'FLOPs(G)', 'Size(MB)',
+                         'GPU_FPS', 'GPU_Latency(ms)', 'GPU_Mem(MB)',
+                         'CPU_FPS', 'CPU_Latency(ms)', 'mIoU'])
+        for row in rows:
+            flops_g = f"{row['flops']/1e9:.2f}" if row['flops'] else ''
+            writer.writerow([
+                row['name'],
+                f"{row['params']/1e6:.2f}",
+                flops_g,
+                f"{row.get('size', 0):.2f}" if row.get('size') else '',
+                f"{row['gpu_fps']:.1f}" if row['gpu_fps'] else '',
+                f"{row['gpu_lat']:.2f}" if row['gpu_lat'] else '',
+                f"{row['gpu_mem']:.1f}" if row['gpu_mem'] else '',
+                f"{row['cpu_fps']:.1f}" if row['cpu_fps'] else '',
+                f"{row['cpu_lat']:.1f}" if row['cpu_lat'] else '',
+                '',  # mIoU placeholder — fill in after eval
+            ])
+    print(f"\n📄 CSV exported to: {csv_path}")
+    print(f"   (mIoU column left empty — merge with eval results)")
 
 
 if __name__ == '__main__':
