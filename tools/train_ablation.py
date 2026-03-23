@@ -5,7 +5,6 @@ Creates model variants with specific components disabled to measure
 each module's contribution to overall performance.
 
 Ablation variants:
-  with_cse     + ColorSpaceEnhancement (use_cse=True)
   no_ela       Replace ELA stages with RepConv stages (no attention)
   no_rep       Replace RepConvBN with standard Conv+BN (no reparameterization)
   no_boundary  Remove BoundaryEnhancement from decoder

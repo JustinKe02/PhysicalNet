@@ -142,11 +142,12 @@ def predict_full_image(model, img_tensor, device, is_smp=False):
         return None  # Caller should fallback to sliding window
 
 
-def sliding_window_predict(model, img_tensor, crop_size, stride, device):
+def sliding_window_predict(model, img_tensor, crop_size, stride, device, is_smp=False):
     """Full-coverage sliding window inference.
 
     Guarantees every pixel is covered at least once by explicitly
     adding boundary windows for the last row, column, and corner.
+    For smp models, pads each crop to a multiple of 32.
 
     Returns: prediction [H,W] numpy int array
     """
@@ -176,9 +177,17 @@ def sliding_window_predict(model, img_tensor, crop_size, stride, device):
     for y in ys:
         for x in xs:
             crop = img_tensor[:, y:y+crop_size, x:x+crop_size].unsqueeze(0).to(device)
+            cH, cW = crop.shape[2], crop.shape[3]
+            if is_smp:
+                smp_pad_h = (32 - cH % 32) % 32
+                smp_pad_w = (32 - cW % 32) % 32
+                if smp_pad_h > 0 or smp_pad_w > 0:
+                    crop = F.pad(crop, [0, smp_pad_w, 0, smp_pad_h], mode='reflect')
             with torch.no_grad():
                 output = model(crop)
                 logits = output[0] if isinstance(output, tuple) else output
+                if is_smp:
+                    logits = logits[:, :, :cH, :cW]
                 probs = F.softmax(logits, dim=1)[0]
             y_end = min(y + crop_size, H)
             x_end = min(x + crop_size, W)
@@ -195,16 +204,17 @@ def smart_predict(model, img_tensor, crop_size, stride, device, use_full=True, i
         pred = predict_full_image(model, img_tensor, device, is_smp=is_smp)
         if pred is not None:
             return pred, 'full'
-    pred = sliding_window_predict(model, img_tensor, crop_size, stride, device)
+    pred = sliding_window_predict(model, img_tensor, crop_size, stride, device, is_smp=is_smp)
     return pred, 'sliding'
 
 
 @torch.no_grad()
-def predict_tta(model, img_tensor, device):
+def predict_tta(model, img_tensor, device, is_smp=False):
     """Test-Time Augmentation: average predictions over 4 transforms.
 
     Transforms: original, horizontal flip, vertical flip, 180° rotation.
     Averages softmax probabilities then takes argmax.
+    For smp models, pads input to multiple of 32.
     """
     C, H, W = img_tensor.shape
     num_classes = 4
@@ -227,8 +237,16 @@ def predict_tta(model, img_tensor, device):
     for tfm, inv_tfm in zip(transforms, inverse_transforms):
         augmented = tfm(img_tensor)
         try:
-            output = model(augmented.unsqueeze(0).to(device))
+            inp = augmented.unsqueeze(0).to(device)
+            if is_smp:
+                pad_h = (32 - H % 32) % 32
+                pad_w = (32 - W % 32) % 32
+                if pad_h > 0 or pad_w > 0:
+                    inp = F.pad(inp, [0, pad_w, 0, pad_h], mode='reflect')
+            output = model(inp)
             logits = output[0] if isinstance(output, tuple) else output
+            if is_smp:
+                logits = logits[:, :, :H, :W]
             probs = F.softmax(logits, dim=1)[0]
             probs = inv_tfm(probs)
             prob_sum += probs
@@ -359,7 +377,7 @@ def main():
 
         t0 = time.time()
         if args.tta:
-            pred = predict_tta(model, img_tensor, device)
+            pred = predict_tta(model, img_tensor, device, is_smp=is_smp)
             method = 'tta'
         else:
             pred, method = smart_predict(model, img_tensor, args.crop_size, args.stride, device, is_smp=is_smp)
@@ -404,7 +422,7 @@ def main():
     if args.output:
         results_path = os.path.join(args.output, f'{args.split}_metrics.txt')
         with open(results_path, 'w') as f:
-            f.write(f'RepELA-Net-{args.model} | {args.split} set | {len(basenames)} images\n')
+            f.write(f'{model_display} | {args.split} set | {len(basenames)} images\n')
             f.write(f'Checkpoint: {args.checkpoint}\n')
             f.write(f'Sliding window: crop={args.crop_size}, stride={args.stride}\n\n')
             f.write(f'mIoU:       {results["mIoU"]:.4f}\n')
