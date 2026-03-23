@@ -86,7 +86,7 @@ ALL_BASELINE_NAMES = list(SMP_MODEL_SPECS.keys())
 ALL_MODEL_NAMES = list(REPELA_MODELS.keys()) + ALL_BASELINE_NAMES
 
 
-def _build_smp_model(model_name, num_classes):
+def _build_smp_model(model_name, num_classes, pretrained=True):
     """Lazily import smp and build a baseline model."""
     try:
         import segmentation_models_pytorch as smp
@@ -96,7 +96,8 @@ def _build_smp_model(model_name, num_classes):
             f'Install with: pip install segmentation-models-pytorch')
     arch, encoder = SMP_MODEL_SPECS[model_name]
     cls = getattr(smp, arch)
-    return cls(encoder_name=encoder, encoder_weights='imagenet',
+    weights = 'imagenet' if pretrained else None
+    return cls(encoder_name=encoder, encoder_weights=weights,
                in_channels=3, classes=num_classes)
 
 
@@ -160,6 +161,8 @@ def get_args():
                    help='Enable ColorSpaceEnhancement (--use_cse / --no-use_cse)')
     p.add_argument('--copy_paste', action=argparse.BooleanOptionalAction, default=False,
                    help='Enable CopyPaste augmentation (--copy_paste / --no-copy_paste)')
+    p.add_argument('--no_pretrain', action='store_true', default=False,
+                   help='Train smp baselines from scratch (no ImageNet pretrain)')
     p.add_argument('--resume', type=str, default=None)
 
     return p.parse_args()
@@ -267,8 +270,10 @@ def build_model(args):
 
     # smp baseline (lazy import)
     if args.model in SMP_MODEL_SPECS:
-        model = _build_smp_model(args.model, nc)
-        name = args.model
+        pretrained = not getattr(args, 'no_pretrain', False)
+        model = _build_smp_model(args.model, nc, pretrained=pretrained)
+        pt_tag = '' if pretrained else ' (scratch)'
+        name = f'{args.model}{pt_tag}'
         return model, name, False
 
     raise ValueError(f'Unknown model: {args.model}')

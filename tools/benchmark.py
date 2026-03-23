@@ -55,11 +55,12 @@ SMP_MODEL_SPECS = {
 }
 
 
-def _build_smp_model(model_name, num_classes):
+def _build_smp_model(model_name, num_classes, pretrained=False):
     import segmentation_models_pytorch as smp
     arch, encoder = SMP_MODEL_SPECS[model_name]
     cls = getattr(smp, arch)
-    return cls(encoder_name=encoder, encoder_weights='imagenet',
+    weights = 'imagenet' if pretrained else None
+    return cls(encoder_name=encoder, encoder_weights=weights,
                in_channels=3, classes=num_classes)
 
 

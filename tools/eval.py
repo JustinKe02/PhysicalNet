@@ -270,7 +270,7 @@ def predict_tta(model, img_tensor, device, is_smp=False):
     return prob_sum.argmax(dim=0).cpu().numpy()
 
 
-def _build_smp_model(model_name, num_classes):
+def _build_smp_model(model_name, num_classes, pretrained=False):
     """Lazily import smp and build a baseline model."""
     try:
         import segmentation_models_pytorch as smp
@@ -280,7 +280,8 @@ def _build_smp_model(model_name, num_classes):
             f'Install with: pip install segmentation-models-pytorch')
     arch, encoder = SMP_MODEL_SPECS[model_name]
     cls = getattr(smp, arch)
-    return cls(encoder_name=encoder, encoder_weights='imagenet',
+    weights = 'imagenet' if pretrained else None
+    return cls(encoder_name=encoder, encoder_weights=weights,
                in_channels=3, classes=num_classes)
 
 
