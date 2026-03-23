@@ -290,7 +290,7 @@ def get_args():
     parser.add_argument('--crop_size', type=int, default=512)
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--epochs', type=int, default=150)
+    parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--lr', type=float, default=6e-4)
     parser.add_argument('--min_lr', type=float, default=1e-6)
     parser.add_argument('--weight_decay', type=float, default=0.01)
@@ -317,10 +317,10 @@ def train_single_ablation(ablation, args):
     train_loader, val_loader = get_dataloaders(
         args.data_root, split_dir=args.split_dir,
         crop_size=args.crop_size, batch_size=args.batch_size,
-        num_workers=args.num_workers, copy_paste=True  # Enable CopyPaste for V3
+        num_workers=args.num_workers, copy_paste=False
     )
 
-    model = build_ablation_model(ablation, args.num_classes, deep_supervision=True)
+    model = build_ablation_model(ablation, args.num_classes, deep_supervision=False)
     model = model.to(device)
     params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info(f'Ablation: {ABLATION_NAMES[ablation]}')
@@ -352,7 +352,7 @@ def train_single_ablation(ablation, args):
 
         train_loss, train_focal, train_dice, train_results = train_one_epoch(
             model, train_loader, criterion, optimizer, device, logger,
-            deep_supervision=True
+            deep_supervision=False
         )
         val_results = validate(model, val_loader, criterion, device)
         scheduler.step()

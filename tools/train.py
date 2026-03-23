@@ -131,7 +131,7 @@ def get_args():
     p.add_argument('--val_stride', type=int, default=384)
 
     # Output
-    p.add_argument('--output_dir', type=str, default='./outputv2')
+    p.add_argument('--output_dir', type=str, default='./output')
     p.add_argument('--save_freq', type=int, default=10)
 
     # Other
@@ -139,14 +139,16 @@ def get_args():
     p.add_argument('--amp', action=argparse.BooleanOptionalAction, default=False,
                    help='Mixed precision training (--amp / --no-amp)')
     p.add_argument('--deep_supervision', action=argparse.BooleanOptionalAction,
-                   default=True)
+                   default=False)
     p.add_argument('--aux_loss_weight', type=float, default=0.4)
-    p.add_argument('--ema', action=argparse.BooleanOptionalAction, default=True,
+    p.add_argument('--ema', action=argparse.BooleanOptionalAction, default=False,
                    help='Use EMA model for validation (--ema / --no-ema)')
     p.add_argument('--ema_decay', type=float, default=0.9995)
     p.add_argument('--early_stop_patience', type=int, default=30)
     p.add_argument('--use_cse', action=argparse.BooleanOptionalAction, default=False,
                    help='Enable ColorSpaceEnhancement (--use_cse / --no-use_cse)')
+    p.add_argument('--copy_paste', action=argparse.BooleanOptionalAction, default=False,
+                   help='Enable CopyPaste augmentation (--copy_paste / --no-copy_paste)')
     p.add_argument('--resume', type=str, default=None)
 
     return p.parse_args()
@@ -524,7 +526,7 @@ def train_single(args):
     train_loader, val_loader = get_dataloaders(
         args.data_root, split_dir=args.split_dir,
         crop_size=args.crop_size, batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        num_workers=args.num_workers, copy_paste=args.copy_paste,
     )
 
     # Loss
