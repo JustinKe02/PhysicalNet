@@ -54,13 +54,19 @@ REPELA_MODELS = {
 }
 
 SMP_MODEL_SPECS = {
-    'unet_r18':      ('Unet',          'resnet18'),
-    'unet_r34':      ('Unet',          'resnet34'),
-    'deeplabv3p_r18':('DeepLabV3Plus',  'resnet18'),
-    'deeplabv3p_mv2':('DeepLabV3Plus',  'mobilenet_v2'),
-    'pspnet_r18':    ('PSPNet',         'resnet18'),
-    'fpn_r18':       ('FPN',            'resnet18'),
-    'unet_mit_b0':   ('Unet',          'mit_b0'),
+    # Tier 1: Lightweight (<5M params)
+    'fpn_mnv3s':       ('FPN',            'timm-mobilenetv3_small_100'),
+    'unet_mnv3s':      ('Unet',           'timm-mobilenetv3_small_100'),
+    'fpn_mv2':         ('FPN',            'mobilenet_v2'),
+    'deeplabv3p_mv2':  ('DeepLabV3Plus',  'mobilenet_v2'),
+    'deeplabv3p_effb0':('DeepLabV3Plus',  'efficientnet-b0'),
+    # Tier 2: Standard (>10M params)
+    'unet_r18':        ('Unet',           'resnet18'),
+    'unet_r34':        ('Unet',           'resnet34'),
+    'deeplabv3p_r18':  ('DeepLabV3Plus',  'resnet18'),
+    'pspnet_r18':      ('PSPNet',         'resnet18'),
+    'fpn_r18':         ('FPN',            'resnet18'),
+    'unet_mit_b0':     ('Unet',           'mit_b0'),
 }
 
 ALL_MODEL_NAMES = list(REPELA_MODELS.keys()) + list(SMP_MODEL_SPECS.keys())

@@ -39,13 +39,19 @@ from models.repela_net import (
 
 # smp baselines (mirrors tools/train.py)
 SMP_MODEL_SPECS = {
-    'unet_r18':      ('Unet',          'resnet18'),
-    'unet_r34':      ('Unet',          'resnet34'),
-    'deeplabv3p_r18':('DeepLabV3Plus',  'resnet18'),
-    'deeplabv3p_mv2':('DeepLabV3Plus',  'mobilenet_v2'),
-    'pspnet_r18':    ('PSPNet',         'resnet18'),
-    'fpn_r18':       ('FPN',            'resnet18'),
-    'unet_mit_b0':   ('Unet',          'mit_b0'),
+    # Tier 1: Lightweight (<5M params)
+    'fpn_mnv3s':       ('FPN',            'timm-mobilenetv3_small_100'),
+    'unet_mnv3s':      ('Unet',           'timm-mobilenetv3_small_100'),
+    'fpn_mv2':         ('FPN',            'mobilenet_v2'),
+    'deeplabv3p_mv2':  ('DeepLabV3Plus',  'mobilenet_v2'),
+    'deeplabv3p_effb0':('DeepLabV3Plus',  'efficientnet-b0'),
+    # Tier 2: Standard (>10M params)
+    'unet_r18':        ('Unet',           'resnet18'),
+    'unet_r34':        ('Unet',           'resnet34'),
+    'deeplabv3p_r18':  ('DeepLabV3Plus',  'resnet18'),
+    'pspnet_r18':      ('PSPNet',         'resnet18'),
+    'fpn_r18':         ('FPN',            'resnet18'),
+    'unet_mit_b0':     ('Unet',           'mit_b0'),
 }
 
 
@@ -298,7 +304,6 @@ def main():
     parser = argparse.ArgumentParser(description='Model Benchmark')
     parser.add_argument('--input_size', type=int, default=512)
     parser.add_argument('--num_classes', type=int, default=4)
-    parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--warmup', type=int, default=50)
     parser.add_argument('--runs', type=int, default=200)
     parser.add_argument('--variants', type=str, nargs='+',
@@ -307,11 +312,17 @@ def main():
     parser.add_argument('--baselines', type=str, nargs='*', default=None,
                         choices=list(SMP_MODEL_SPECS.keys()),
                         help='smp baselines to benchmark (omit for none, empty for all)')
+    parser.add_argument('--no_cpu', action='store_true',
+                        help='Skip CPU benchmark')
+    parser.add_argument('--cpu_runs', type=int, default=20,
+                        help='Number of runs for CPU benchmark (fewer since CPU is slower)')
     args = parser.parse_args()
 
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}")
-    if device.type == 'cuda':
+    has_gpu = torch.cuda.is_available()
+    gpu_device = torch.device('cuda') if has_gpu else None
+    cpu_device = torch.device('cpu')
+
+    if has_gpu:
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     print(f"Input: {args.input_size}x{args.input_size}, Classes: {args.num_classes}")
 
@@ -321,53 +332,103 @@ def main():
         'base': ('RepELA-Net-Base', repela_net_base),
     }
 
+    # Collect all results: { name: { 'params', 'flops', 'gpu_fps', 'gpu_lat', 'gpu_mem', 'cpu_fps', 'cpu_lat' } }
+    rows = []
+
     # ── RepELA-Net variants ──
-    repela_results = {}
     for variant in args.variants:
         name, fn = repela_fns[variant]
-        train_r, deploy_r = benchmark_model(name, fn, args, device)
-        repela_results[variant] = (name, train_r, deploy_r)
+        if has_gpu:
+            train_r, deploy_r = benchmark_model(name, fn, args, gpu_device)
+        # CPU pass for deploy mode
+        cpu_fps, cpu_lat = None, None
+        if not args.no_cpu:
+            print(f"\n  [CPU benchmark: {name} deploy]")
+            cpu_model = fn(num_classes=args.num_classes).to(cpu_device)
+            cpu_model.eval()
+            cpu_model.switch_to_deploy()
+            cpu_args = argparse.Namespace(**vars(args))
+            cpu_args.warmup = 5
+            cpu_args.runs = args.cpu_runs
+            cpu_lat_avg, _, cpu_fps_val, _, _ = measure_latency(
+                cpu_model, args.input_size, cpu_device,
+                warmup=5, runs=args.cpu_runs)
+            cpu_fps, cpu_lat = cpu_fps_val, cpu_lat_avg
+            print(f"  CPU FPS: {cpu_fps:.1f}, Latency: {cpu_lat:.1f}ms")
+            del cpu_model
+
+        if has_gpu:
+            rows.append({
+                'name': name + ' (train)', 'params': train_r['params'],
+                'flops': train_r['flops'], 'gpu_fps': train_r['fps'],
+                'gpu_lat': train_r['latency'], 'gpu_mem': train_r['memory'],
+                'cpu_fps': None, 'cpu_lat': None,
+            })
+            rows.append({
+                'name': name + ' (deploy)', 'params': deploy_r['params'],
+                'flops': deploy_r['flops'], 'gpu_fps': deploy_r['fps'],
+                'gpu_lat': deploy_r['latency'], 'gpu_mem': deploy_r['memory'],
+                'cpu_fps': cpu_fps, 'cpu_lat': cpu_lat,
+            })
 
     # ── smp baselines ──
-    smp_results = {}
+    baseline_list = []
     if args.baselines is not None:
         baseline_list = args.baselines if args.baselines else list(SMP_MODEL_SPECS.keys())
-        for bl in baseline_list:
-            r = benchmark_smp_model(bl, bl, args, device)
-            smp_results[bl] = r
+
+    for bl in baseline_list:
+        if has_gpu:
+            r = benchmark_smp_model(bl, bl, args, gpu_device)
+        else:
+            r = {'params': 0, 'flops': None, 'fps': 0, 'latency': 0, 'memory': None}
+
+        cpu_fps, cpu_lat = None, None
+        if not args.no_cpu:
+            print(f"\n  [CPU benchmark: {bl}]")
+            cpu_model = _build_smp_model(bl, args.num_classes).to(cpu_device)
+            cpu_model.eval()
+            cpu_lat_avg, _, cpu_fps_val, _, _ = measure_latency(
+                cpu_model, args.input_size, cpu_device,
+                warmup=5, runs=args.cpu_runs)
+            cpu_fps, cpu_lat = cpu_fps_val, cpu_lat_avg
+            print(f"  CPU FPS: {cpu_fps:.1f}, Latency: {cpu_lat:.1f}ms")
+            del cpu_model
+
+        rows.append({
+            'name': bl, 'params': r['params'],
+            'flops': r['flops'], 'gpu_fps': r['fps'],
+            'gpu_lat': r['latency'], 'gpu_mem': r['memory'],
+            'cpu_fps': cpu_fps, 'cpu_lat': cpu_lat,
+        })
 
     # ── Summary table ──
-    print(f"\n{'='*70}")
+    print(f"\n{'='*90}")
     print(f"  SUMMARY TABLE @{args.input_size}x{args.input_size}")
-    print(f"{'='*70}")
-    header = f"{'Model':<25} {'Params':>8} {'FLOPs':>8} {'FPS':>8} {'Lat(ms)':>8} {'Mem(MB)':>8}"
+    print(f"{'='*90}")
+    header = (f"{'Model':<25} {'Params':>8} {'FLOPs':>8} "
+              f"{'GPU FPS':>8} {'GPU ms':>8} {'Mem MB':>8} "
+              f"{'CPU FPS':>8} {'CPU ms':>8}")
     print(header)
     print("-" * len(header))
 
-    for variant in args.variants:
-        name, train_r, deploy_r = repela_results[variant]
-        print(f"{name+' (train)':<25} "
-              f"{format_num(train_r['params']):>8} "
-              f"{format_num(train_r['flops']) if train_r['flops'] else 'N/A':>8} "
-              f"{train_r['fps']:>8.1f} "
-              f"{train_r['latency']:>8.2f} "
-              f"{train_r['memory'] or 0:>8.1f}")
-        print(f"{name+' (deploy)':<25} "
-              f"{format_num(deploy_r['params']):>8} "
-              f"{format_num(deploy_r['flops']) if deploy_r['flops'] else 'N/A':>8} "
-              f"{deploy_r['fps']:>8.1f} "
-              f"{deploy_r['latency']:>8.2f} "
-              f"{deploy_r['memory'] or 0:>8.1f}")
+    for row in rows:
+        gpu_fps_s = f"{row['gpu_fps']:.1f}" if row['gpu_fps'] else 'N/A'
+        gpu_lat_s = f"{row['gpu_lat']:.2f}" if row['gpu_lat'] else 'N/A'
+        gpu_mem_s = f"{row['gpu_mem']:.1f}" if row['gpu_mem'] else 'N/A'
+        cpu_fps_s = f"{row['cpu_fps']:.1f}" if row['cpu_fps'] else '-'
+        cpu_lat_s = f"{row['cpu_lat']:.1f}" if row['cpu_lat'] else '-'
+        print(f"{row['name']:<25} "
+              f"{format_num(row['params']):>8} "
+              f"{format_num(row['flops']) if row['flops'] else 'N/A':>8} "
+              f"{gpu_fps_s:>8} "
+              f"{gpu_lat_s:>8} "
+              f"{gpu_mem_s:>8} "
+              f"{cpu_fps_s:>8} "
+              f"{cpu_lat_s:>8}")
 
-    for bl, r in smp_results.items():
-        print(f"{bl:<25} "
-              f"{format_num(r['params']):>8} "
-              f"{format_num(r['flops']) if r['flops'] else 'N/A':>8} "
-              f"{r['fps']:>8.1f} "
-              f"{r['latency']:>8.2f} "
-              f"{r['memory'] or 0:>8.1f}")
+    print(f"{'='*90}")
 
-    print(f"{'='*70}")
 
 if __name__ == '__main__':
     main()
+
