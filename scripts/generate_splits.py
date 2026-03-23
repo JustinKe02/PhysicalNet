@@ -5,13 +5,17 @@ Split ratio: 70% train / 15% val / 15% test (default)
 Saves to splits/train.txt, splits/val.txt, splits/test.txt
 
 Usage:
-    python generate_splits.py --data_root Mos2_data --output splits/
+    python scripts/generate_splits.py --data_root Mos2_data --output splits/
 """
 
 import os
 import glob
 import random
 import argparse
+from pathlib import Path
+
+# Ensure cwd = project root
+os.chdir(str(Path(__file__).resolve().parents[1]))
 
 
 def main():

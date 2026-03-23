@@ -19,17 +19,22 @@ Output layout:
   Original | RepConv Grad-CAM | ELA Grad-CAM | Decoder Grad-CAM | Prediction [| GT]
 
 Usage:
-    python visualize_features.py \
+    python scripts/visualize_features.py \
         --image Mos2_data/ori/MoS2/m7.jpg \
         --checkpoint output/repela_small_*/best_model.pth
 
-    python visualize_features.py --split test --max_images 4 \
+    python scripts/visualize_features.py --split test --max_images 4 \
         --checkpoint output/repela_small_*/best_model.pth
 """
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Ensure cwd = project root so relative paths (Mos2_data/, splits/) work
+import os as _os
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+_os.chdir(_PROJECT_ROOT)
+
 import os
 import argparse
 import numpy as np

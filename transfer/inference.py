@@ -16,6 +16,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Ensure cwd = project root so relative paths (Mos2_data/, splits/) work
+import os as _os
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+_os.chdir(_PROJECT_ROOT)
+
 import os
 import json
 import argparse
@@ -31,7 +36,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base
-from datasets.material_dataset import compute_dataset_stats
+from transfer.material_dataset import compute_dataset_stats
 
 CLASS_COLORS = {
     3: np.array([[0,0,0],[239,41,41],[114,159,207]], dtype=np.uint8),        # graphene

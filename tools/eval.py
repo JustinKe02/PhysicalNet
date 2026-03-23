@@ -6,11 +6,11 @@ on a specified split using deterministic sliding-window inference.
 
 Usage:
     # Evaluate on val set
-    python eval.py --data_root Mos2_data --split val \
+    python tools/eval.py --data_root Mos2_data --split val \
         --checkpoint output/repela_small_*/best_model.pth
 
     # Evaluate on test set
-    python eval.py --data_root Mos2_data --split test \
+    python tools/eval.py --data_root Mos2_data --split test \
         --checkpoint output/repela_small_*/best_model.pth
 """
 
@@ -18,6 +18,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Ensure cwd = project root so relative paths (Mos2_data/, splits/) work
+import os as _os
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+_os.chdir(_PROJECT_ROOT)
+
 import os
 import glob
 import time

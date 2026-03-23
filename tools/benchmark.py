@@ -10,15 +10,20 @@ Measures all metrics needed for paper:
   - Comparison across Tiny / Small / Base variants
 
 Usage:
-    python benchmark.py
-    python benchmark.py --input_size 256   # test different resolutions
-    python benchmark.py --device cpu       # CPU benchmark
+    python tools/benchmark.py
+    python tools/benchmark.py --input_size 256   # test different resolutions
+    python tools/benchmark.py --device cpu       # CPU benchmark
 """
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Ensure cwd = project root so relative paths (Mos2_data/, splits/) work
+import os as _os
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+_os.chdir(_PROJECT_ROOT)
+
 import os
 import time
 import argparse

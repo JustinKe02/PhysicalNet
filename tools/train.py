@@ -4,27 +4,32 @@ Unified Training Script for RepELA-Net, Baselines, and Ablation Studies.
 All models share the SAME training recipe (crop, loss, AMP, grad clip, eval)
 for fair and reproducible comparison on 4-class MoS2 segmentation.
 
-Usage:
+Usage (from project root):
     # Main model
-    python train_unified.py --model repela_small
+    python tools/train.py --model repela_small
 
     # Baseline (requires segmentation_models_pytorch)
-    python train_unified.py --model unet_r18
+    python tools/train.py --model unet_r18
 
     # Ablation (only repela_small)
-    python train_unified.py --model repela_small --ablation no_ela
+    python tools/train.py --model repela_small --ablation no_ela
 
     # All baselines sequentially
-    python train_unified.py --model all_baselines
+    python tools/train.py --model all_baselines
 
     # All ablations sequentially
-    python train_unified.py --model repela_small --ablation all
+    python tools/train.py --model repela_small --ablation all
 """
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Ensure cwd = project root so relative paths (Mos2_data/, splits/) work
+import os as _os
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+_os.chdir(_PROJECT_ROOT)
+
 import os
 import sys
 import math

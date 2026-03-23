@@ -11,11 +11,11 @@ Features:
 
 Usage:
     # Visualize val set predictions
-    python inference.py --data_root Mos2_data --split val \
+    python tools/inference.py --data_root Mos2_data --split val \
         --checkpoint output/repela_small_*/best_model.pth
 
     # Single image
-    python inference.py --image Mos2_data/ori/MoS2/m1.jpg \
+    python tools/inference.py --image Mos2_data/ori/MoS2/m1.jpg \
         --checkpoint output/repela_small_*/best_model.pth
 """
 
@@ -23,6 +23,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Ensure cwd = project root so relative paths (Mos2_data/, splits/) work
+import os as _os
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+_os.chdir(_PROJECT_ROOT)
+
 import os
 import glob
 import time

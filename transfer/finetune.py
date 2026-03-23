@@ -10,21 +10,21 @@ Fine-tunes a pretrained MoS2 model on other 2D material datasets
 
 Usage:
     # Fine-tune on graphene (3 classes)
-    python finetune.py \
+    python transfer/finetune.py \
         --data_root "other data/graphene" \
         --pretrained output/repela_small_*/best_model.pth \
         --num_classes 3 --epochs 100 \
         --name graphene
 
     # Fine-tune on WS2 (4 classes)
-    python finetune.py \
+    python transfer/finetune.py \
         --data_root "other data/WS2_data" \
         --pretrained output/repela_small_*/best_model.pth \
         --num_classes 4 --epochs 100 \
         --name ws2
 
     # Fine-tune on MoS2_extra (4 classes)
-    python finetune.py \
+    python transfer/finetune.py \
         --data_root "other data/MoS2_data" \
         --pretrained output/repela_small_*/best_model.pth \
         --num_classes 4 --epochs 100 \
@@ -35,6 +35,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Ensure cwd = project root so relative paths (Mos2_data/, splits/) work
+import os as _os
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+_os.chdir(_PROJECT_ROOT)
+
 import os
 import sys
 import time
@@ -56,7 +61,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from models.repela_net import repela_net_tiny, repela_net_small, repela_net_base, infer_use_cse
-from datasets.material_dataset import (MaterialDataset, collate_variable_size,
+from transfer.material_dataset import (MaterialDataset, collate_variable_size,
                                         compute_dataset_stats, get_auto_crop_size,
                                         IMAGENET_MEAN, IMAGENET_STD)
 from utils.losses import HybridLoss
