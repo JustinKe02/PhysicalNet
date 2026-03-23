@@ -3,12 +3,7 @@ Mos2_data/
 other data/
 
 # Outputs (checkpoints, logs, tensorboard)
-output/
-outputv2/
-outputv3/
-outputv4/
-outputv4_oldcfg/
-outputv4_plots/
+train_before/
 checkpoints/
 runs/
 
