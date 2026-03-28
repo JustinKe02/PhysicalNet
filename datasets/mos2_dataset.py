@@ -232,8 +232,17 @@ def collate_variable_size(batch):
 
 
 def get_dataloaders(data_root, split_dir='splits/', crop_size=512,
-                    batch_size=8, num_workers=4, copy_paste=True):
-    """Create train and val dataloaders."""
+                    batch_size=8, num_workers=4, copy_paste=True,
+                    seed=None):
+    """Create train and val dataloaders.
+
+    Args:
+        seed: if provided, enables strict reproducibility via
+              torch.Generator and worker_init_fn.
+    """
+    import random as _random
+    import numpy as _np
+
     train_dataset = MoS2Dataset(
         data_root, split='train', split_dir=split_dir,
         crop_size=crop_size, augment=True, copy_paste=copy_paste
@@ -243,14 +252,28 @@ def get_dataloaders(data_root, split_dir='splits/', crop_size=512,
         crop_size=crop_size, augment=False
     )
 
+    # Reproducibility controls
+    g = None
+    wif = None
+    if seed is not None:
+        g = torch.Generator()
+        g.manual_seed(seed)
+        def wif(worker_id):
+            worker_seed = torch.initial_seed() % 2**32
+            _np.random.seed(worker_seed)
+            _random.seed(worker_seed)
+            torch.manual_seed(worker_seed)
+
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, pin_memory=True, drop_last=True
+        num_workers=num_workers, pin_memory=True, drop_last=True,
+        generator=g, worker_init_fn=wif
     )
     # Val: batch_size=1 because images are full-resolution
     val_loader = DataLoader(
         val_dataset, batch_size=1, shuffle=False,
         num_workers=num_workers, pin_memory=True, drop_last=False,
-        collate_fn=collate_variable_size
+        collate_fn=collate_variable_size,
+        worker_init_fn=wif
     )
     return train_loader, val_loader

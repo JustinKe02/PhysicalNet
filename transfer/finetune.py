@@ -96,7 +96,7 @@ def get_args():
                         help='Path to dataset (e.g., "other data/graphene")')
     parser.add_argument('--name', type=str, required=True,
                         help='Name for this experiment (e.g., graphene, ws2)')
-    parser.add_argument('--pretrained', type=str, required=True,
+    parser.add_argument('--pretrained', type=str, required=False, default=None,
                         help='Path to MoS2 pretrained checkpoint')
     parser.add_argument('--model', type=str, default='small',
                         choices=['tiny', 'small', 'base'])
@@ -133,6 +133,12 @@ def get_args():
                         choices=list(DATASET_CONFIGS.keys()) + ['auto', 'none'],
                         help='Dataset class mapping for head init. '
                              'auto=infer from --name, none=random init')
+    parser.add_argument('--reset_head', action='store_true', default=False,
+                        help='Re-initialize seg_head/boundary_head to random after '
+                             'loading pretrained (isolates encoder-only transfer)')
+    parser.add_argument('--transfer_stages', type=str, default='all',
+                        help='Comma-separated stages to load from pretrained, e.g. "1,2" '
+                             'for low-level only. "all"=load everything (default).')
     parser.add_argument('--use_cse', action=argparse.BooleanOptionalAction, default=False,
                         help='Enable ColorSpaceEnhancement (--use_cse / --no-use_cse)')
 
@@ -188,7 +194,8 @@ def _init_head_from_class_map(model, head_weights, class_map, logger=None):
 
 
 def load_pretrained(model, checkpoint_path, num_classes_pretrained=4,
-                    num_classes_target=4, class_map=None, logger=None):
+                    num_classes_target=4, class_map=None, transfer_stages='all',
+                    logger=None):
     """Load pretrained weights with class-mapped head initialization."""
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     pretrained_sd = ckpt['model']
@@ -220,6 +227,23 @@ def load_pretrained(model, checkpoint_path, num_classes_pretrained=4,
                 logger.info(f'  Excluded (keep target norm): {k}')
 
     # Load backbone weights (strict=False for missing head keys / norm buffers)
+    # Optional: only load specific stages
+    if transfer_stages != 'all':
+        allowed = set(f'stage{s}' for s in transfer_stages.split(','))
+        # Also always keep stem weights
+        drop_keys = []
+        for k in list(pretrained_sd.keys()):
+            is_stage = any(k.startswith(f'stage{i}') or f'.stage{i}' in k for i in range(1, 5))
+            if is_stage:
+                belongs = any(s in k for s in allowed)
+                if not belongs:
+                    drop_keys.append(k)
+        for k in drop_keys:
+            del pretrained_sd[k]
+        if logger:
+            logger.info(f'  Partial transfer: loaded stages {transfer_stages}, '
+                        f'dropped {len(drop_keys)} keys from other stages')
+
     missing, unexpected = model.load_state_dict(pretrained_sd, strict=False)
     if logger:
         logger.info(f'  Loaded pretrained weights from: {checkpoint_path}')
@@ -368,6 +392,10 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
     output_dir = os.path.join(args.output_dir, f'finetune_{args.name}')
     logger = setup_logger(output_dir)
@@ -402,15 +430,28 @@ def main():
                                    crop_size=args.crop_size, augment=False,
                                    mean=ds_mean, std=ds_std)
 
+    # Seed-controlled DataLoader for reproducibility
+    g = torch.Generator()
+    g.manual_seed(args.seed)
+    def _wif(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
                               shuffle=True, num_workers=args.num_workers,
-                              pin_memory=True, drop_last=True)
+                              pin_memory=True, drop_last=True,
+                              generator=g, worker_init_fn=_wif)
 
-    # Model — auto-restore use_cse from pretrained checkpoint
-    _tmp_ck = torch.load(args.pretrained, map_location='cpu', weights_only=False)
-    use_cse = infer_use_cse(_tmp_ck, cli_use_cse=args.use_cse)
-    logger.info(f'Inferred use_cse={use_cse}')
-    del _tmp_ck
+    # Model — auto-restore use_cse from pretrained checkpoint (or default)
+    is_scratch = (args.pretrained is None or args.pretrained.lower() == 'none')
+    if is_scratch:
+        use_cse = args.use_cse
+        logger.info(f'Scratch mode: no pretrained weights, use_cse={use_cse}')
+    else:
+        _tmp_ck = torch.load(args.pretrained, map_location='cpu', weights_only=False)
+        use_cse = infer_use_cse(_tmp_ck, cli_use_cse=args.use_cse)
+        logger.info(f'Inferred use_cse={use_cse}')
+        del _tmp_ck
 
     model_fn = {'tiny': repela_net_tiny, 'small': repela_net_small,
                 'base': repela_net_base}[args.model]
@@ -444,13 +485,33 @@ def main():
     logger.info(f'Dataset config: {ds_key} -> classes={class_names}, '
                 f'class_map={"yes" if class_map else "none (random head init)"}')
 
-    # Load pretrained
-    logger.info('Loading pretrained MoS2 weights...')
-    model = load_pretrained(model, args.pretrained,
-                            num_classes_pretrained=4,
-                            num_classes_target=args.num_classes,
-                            class_map=class_map,
-                            logger=logger)
+    # Load pretrained (skip for scratch)
+    if is_scratch:
+        logger.info('Training from scratch (random initialization)')
+    else:
+        logger.info('Loading pretrained MoS2 weights...')
+        model = load_pretrained(model, args.pretrained,
+                                num_classes_pretrained=4,
+                                num_classes_target=args.num_classes,
+                                class_map=class_map,
+                                transfer_stages=args.transfer_stages,
+                                logger=logger)
+
+        # Optional: re-randomize head after loading pretrained encoder
+        if args.reset_head:
+            logger.info('  Resetting seg_head/boundary_head to random (encoder-only transfer)')
+            for name, module in model.named_modules():
+                if 'seg_head' in name or 'boundary_head' in name:
+                    if hasattr(module, 'reset_parameters'):
+                        module.reset_parameters()
+                    else:
+                        for p in module.parameters():
+                            if p.dim() >= 2:
+                                nn.init.kaiming_normal_(p, mode='fan_out', nonlinearity='relu')
+                            elif p.dim() == 1:
+                                nn.init.zeros_(p)
+                    logger.info(f'    Reset: {name}')
+
     model = model.to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -606,7 +667,8 @@ def main():
     # Save metrics to file
     with open(os.path.join(output_dir, 'results.txt'), 'w') as f:
         f.write(f'Dataset: {args.name}\n')
-        f.write(f'Pretrained: {args.pretrained}\n')
+        pretrained_str = args.pretrained if args.pretrained else 'none'
+        f.write(f'Pretrained: {pretrained_str}\n')
         f.write(f'Best epoch: {ckpt["epoch"]+1}\n')
         f.write(f'mIoU: {final_results["mIoU"]:.4f}\n')
         f.write(f'Pixel Acc: {final_results["pixel_acc"]:.4f}\n')

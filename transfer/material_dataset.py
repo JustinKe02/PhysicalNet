@@ -165,7 +165,7 @@ class MaterialDataset(Dataset):
 
         # Scale jitter: random resize before crop (multi-scale training)
         if self.augment and random.random() > 0.3:
-            scale = random.uniform(0.5, 2.0)
+            scale = random.uniform(0.75, 1.5)
             new_h, new_w = int(h * scale), int(w * scale)
             # Ensure at least crop_size
             new_h = max(new_h, self.crop_size)
@@ -203,9 +203,7 @@ class MaterialDataset(Dataset):
             img = TF.adjust_contrast(img, random.uniform(0.8, 1.2))
         if random.random() > 0.5:
             img = TF.adjust_saturation(img, random.uniform(0.8, 1.2))
-        # Hue jitter for domain robustness
-        if random.random() > 0.5:
-            img = TF.adjust_hue(img, random.uniform(-0.05, 0.05))
+        # Note: hue jitter removed — risky for small material datasets
         return img, mask
 
     def __getitem__(self, idx):
