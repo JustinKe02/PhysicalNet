@@ -1,6 +1,9 @@
 """
 Qualitative inference comparison for Ablation (Section 4) and Decoder (Section 6).
 Generates 2 publication-ready figures.
+
+For ablation, saved masks from output/eval_results/* are used so the figure is
+consistent with the formal test metrics.
 """
 import os, sys, glob
 import numpy as np
@@ -16,7 +19,6 @@ sys.path.insert(0, '/root/autodl-tmp/PhysicalNet')
 os.chdir('/root/autodl-tmp/PhysicalNet')
 
 from models.repela_net import RepELANet
-from tools.train_ablation import build_ablation_model
 from tools.train_decoder_compare import build_encoder_with_decoder
 from datasets.mos2_dataset import MoS2Dataset
 
@@ -75,7 +77,7 @@ def read_image(name):
     img_t = TF.normalize(T.ToTensor()(img), mean, std)
     return np.array(img), gt, img_t
 
-# Ablation: samples where Ours advantage is largest
+# Ablation: representative qualitative samples
 ABLATION_SAMPLES = ['m155', 'm106', 'm10']
 # Decoder: samples where Ours performs competitively
 DECODER_SAMPLES = ['m124', 'm80', 'm40']
@@ -86,41 +88,27 @@ DECODER_SAMPLES = ['m124', 'm80', 'm40']
 def make_ablation_figure():
     print('=== Ablation Comparison Figure ===')
     variants = [
-        ('Ours', 'seed42', None),
-        ('w/o ELA', 'no_ela', 'no_ela'),
-        ('w/o DW-MFF', 'no_dwmff', 'no_dwmff'),
-        ('w/o Boundary', 'no_boundary', 'no_boundary'),
+        ('Ours', 'output/eval_results/seed_123'),
+        ('w/o RepConv', 'output/eval_results/ablation_no_rep'),
+        ('w/o ELA', 'output/eval_results/ablation_no_ela'),
+        ('w/o DW-MFF', 'output/eval_results/ablation_no_dwmff'),
+        ('w/o Boundary', 'output/eval_results/ablation_no_boundary'),
     ]
-
-    ckpt_map = {
-        'seed42': 'output/seed_test/seed_42/repela_small_20260324_080734/best_model.pth',
-        'no_ela': glob.glob('output/ablation/no_ela_*/best_model.pth')[0],
-        'no_dwmff': glob.glob('output/ablation/no_dwmff_*/best_model.pth')[0],
-        'no_boundary': glob.glob('output/ablation/no_boundary_*/best_model.pth')[0],
-    }
 
     # Load predictions
     preds = {}
-    for label, ckpt_key, ablation in variants:
-        print(f'  Loading {label}...')
-        if ablation is None:
-            model = RepELANet(num_classes=4, channels=(32,64,128,256),
-                              num_blocks=(2,2,4,2), num_heads=(0,0,4,8),
-                              decoder_channels=128, deep_supervision=False)
-        else:
-            model = build_ablation_model(ablation, num_classes=4, deep_supervision=False)
-        model = load_model_weights(model, ckpt_map[ckpt_key])
+    for label, eval_dir in variants:
+        print(f'  Reading {label} from {eval_dir}...')
         preds[label] = {}
         for name in ABLATION_SAMPLES:
-            _, _, img_t = read_image(name)
-            preds[label][name] = sliding_window_pred(model, img_t)
-        del model; torch.cuda.empty_cache()
+            pred_path = f'{eval_dir}/{name}_pred.png'
+            preds[label][name] = np.array(Image.open(pred_path))
 
-    # Build figure: rows=samples, cols=Image GT Ours w/oELA w/oDW-MFF w/oBoundary
+    # Build figure: rows=samples, cols=Image GT Ours w/oRep w/oELA w/oDW-MFF w/oBoundary
     cols = ['Image', 'GT'] + [v[0] for v in variants]
     nrows = len(ABLATION_SAMPLES)
     ncols = len(cols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(2.5*ncols, 2.5*nrows))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(2.4*ncols, 2.5*nrows))
 
     for i, name in enumerate(ABLATION_SAMPLES):
         img_np, gt, _ = read_image(name)
@@ -131,7 +119,7 @@ def make_ablation_figure():
         axes[i][0].imshow(img_r); axes[i][0].axis('off')
         axes[i][1].imshow(gt_r); axes[i][1].axis('off')
 
-        for j, (label, _, _) in enumerate(variants):
+        for j, (label, _) in enumerate(variants):
             pred_r = np.array(Image.fromarray(colorize(preds[label][name])).resize((w, h), Image.NEAREST))
             axes[i][j+2].imshow(pred_r); axes[i][j+2].axis('off')
 

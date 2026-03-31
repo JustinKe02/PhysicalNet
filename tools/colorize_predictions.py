@@ -1,7 +1,7 @@
 """
-Colorize seed_42 inference results.
+Colorize saved inference results for a specified MoS2 seed.
 
-For each test image, creates a folder under output/eval_results/seed_42/visualizations/<image_name>/
+For each test image, creates a folder under output/eval_results/<seed_tag>/visualizations/<image_name>/
 containing:
   - original.png       : the original RGB image
   - gt_color.png       : ground truth mask (colorized)
@@ -9,6 +9,7 @@ containing:
   - comparison.png     : side-by-side: Original | Prediction | Ground Truth
 """
 
+import argparse
 import os
 import sys
 import re
@@ -20,11 +21,8 @@ import matplotlib.pyplot as plt
 
 # ─── Config ──────────────────────────────────────────────────────────
 PROJECT_ROOT = '/root/autodl-tmp/PhysicalNet'
-PRED_DIR     = os.path.join(PROJECT_ROOT, 'output/eval_results/seed_42')
 IMAGE_DIR    = os.path.join(PROJECT_ROOT, 'Mos2_data/ori/MoS2')
 MASK_DIR     = os.path.join(PROJECT_ROOT, 'Mos2_data/mask')
-OUTPUT_ROOT  = os.path.join(PRED_DIR, 'visualizations')
-METRICS_FILE = os.path.join(PRED_DIR, 'test_metrics.txt')
 
 CLASS_NAMES = ['background', 'monolayer', 'fewlayer', 'multilayer']
 # More visually appealing colors (RGB)
@@ -92,20 +90,36 @@ def make_comparison(img_rgb, pred_color, gt_color, name, miou, save_path):
 
 # ─── Main ────────────────────────────────────────────────────────────
 
+def get_args():
+    parser = argparse.ArgumentParser(description='Colorize saved prediction masks')
+    parser.add_argument('--seed-tag', default='seed_123',
+                        help='Evaluation result directory name under output/eval_results')
+    parser.add_argument('--pred-dir', default=None,
+                        help='Optional explicit prediction directory')
+    parser.add_argument('--output-root', default=None,
+                        help='Optional explicit visualization output root')
+    return parser.parse_args()
+
+
 def main():
-    os.makedirs(OUTPUT_ROOT, exist_ok=True)
+    args = get_args()
+    pred_dir = args.pred_dir or os.path.join(PROJECT_ROOT, f'output/eval_results/{args.seed_tag}')
+    output_root = args.output_root or os.path.join(pred_dir, 'visualizations')
+    metrics_file = os.path.join(pred_dir, 'test_metrics.txt')
+
+    os.makedirs(output_root, exist_ok=True)
 
     # Parse per-image mIoU
-    miou_map = parse_per_image_miou(METRICS_FILE)
+    miou_map = parse_per_image_miou(metrics_file)
     print(f'Parsed mIoU for {len(miou_map)} images')
 
     # Find all prediction files
-    pred_files = sorted([f for f in os.listdir(PRED_DIR) if f.endswith('_pred.png')])
+    pred_files = sorted([f for f in os.listdir(pred_dir) if f.endswith('_pred.png')])
     print(f'Found {len(pred_files)} prediction files')
 
     for pred_file in pred_files:
         name = pred_file.replace('_pred.png', '')
-        pred_path = os.path.join(PRED_DIR, pred_file)
+        pred_path = os.path.join(pred_dir, pred_file)
         img_path  = os.path.join(IMAGE_DIR, f'{name}.jpg')
         mask_path = os.path.join(MASK_DIR,  f'{name}.png')
 
@@ -114,7 +128,7 @@ def main():
             continue
 
         # Create per-image output directory
-        out_dir = os.path.join(OUTPUT_ROOT, name)
+        out_dir = os.path.join(output_root, name)
         os.makedirs(out_dir, exist_ok=True)
 
         # Load
@@ -145,7 +159,7 @@ def main():
 
         print(f'  ✓ {name} (mIoU={miou:.4f}) → {out_dir}/')
 
-    print(f'\nDone! All visualizations saved to: {OUTPUT_ROOT}/')
+    print(f'\nDone! All visualizations saved to: {output_root}/')
 
 
 if __name__ == '__main__':

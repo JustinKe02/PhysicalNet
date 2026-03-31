@@ -1,0 +1,11 @@
+Dataset: ws2_r2_resethead
+Pretrained: output/seed_test/seed_42/repela_small_20260324_080734/best_model.pth
+Best epoch: 57
+mIoU: 0.9109
+Pixel Acc: 0.9863
+Mean F1: 0.9527
+
+C0     IoU=0.9891  F1=0.9945
+C1     IoU=0.9174  F1=0.9569
+C2     IoU=0.8800  F1=0.9362
+C3     IoU=0.8571  F1=0.9231

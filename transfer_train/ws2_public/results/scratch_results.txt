@@ -1,0 +1,11 @@
+Dataset: ws2_scratch
+Pretrained: none
+Best epoch: 47
+mIoU: 0.8968
+Pixel Acc: 0.9856
+Mean F1: 0.9444
+
+C0     IoU=0.9893  F1=0.9946
+C1     IoU=0.9140  F1=0.9551
+C2     IoU=0.8607  F1=0.9251
+C3     IoU=0.8231  F1=0.9030

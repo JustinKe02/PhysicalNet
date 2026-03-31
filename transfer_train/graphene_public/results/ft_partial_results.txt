@@ -1,0 +1,10 @@
+Dataset: graphene_r3_partial
+Pretrained: output/seed_test/seed_42/repela_small_20260324_080734/best_model.pth
+Best epoch: 132
+mIoU: 0.6843
+Pixel Acc: 0.9595
+Mean F1: 0.7964
+
+BG     IoU=0.9627  F1=0.9810
+1L     IoU=0.5953  F1=0.7463
+>1L    IoU=0.4948  F1=0.6620

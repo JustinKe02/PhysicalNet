@@ -1,6 +1,9 @@
 """
 Generate individual prediction images for ablation and decoder comparison.
-Output: output/individual_preds/{ablation,decoder}/{sample}_{model}.png
+Output: output/individual_preds/{ablation,ablation_set2,decoder}/{sample}_{model}.png
+
+For ablation samples, predictions are read from output/eval_results/* so the
+visualizations are consistent with formal test metrics.
 """
 import os, sys, glob
 import numpy as np
@@ -13,7 +16,6 @@ sys.path.insert(0, '/root/autodl-tmp/PhysicalNet')
 os.chdir('/root/autodl-tmp/PhysicalNet')
 
 from models.repela_net import RepELANet
-from tools.train_ablation import build_ablation_model
 from tools.train_decoder_compare import build_encoder_with_decoder
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -58,15 +60,19 @@ def sliding_window_pred(model, img_t, crop=512, stride=384, nc=4):
     return (pred_sum / count.clamp(min=1).unsqueeze(0)).argmax(0).cpu().numpy()
 
 # ── Ablation ──
-ABL_SAMPLES = ['m155', 'm106', 'm10']
-ABL_DIR = 'output/individual_preds/ablation'
-os.makedirs(ABL_DIR, exist_ok=True)
+ABLATION_SETS = {
+    'output/individual_preds/ablation': ['m155', 'm106', 'm10'],
+    'output/individual_preds/ablation_set2': ['m105', 'm149', 'm99'],
+}
+for _dir in ABLATION_SETS:
+    os.makedirs(_dir, exist_ok=True)
 
 ablation_models = [
-    ('Ours', None, 'output/seed_test/seed_42/repela_small_20260324_080734/best_model.pth'),
-    ('wo_ELA', 'no_ela', glob.glob('output/ablation/no_ela_*/best_model.pth')[0]),
-    ('wo_DWMFF', 'no_dwmff', glob.glob('output/ablation/no_dwmff_*/best_model.pth')[0]),
-    ('wo_Boundary', 'no_boundary', glob.glob('output/ablation/no_boundary_*/best_model.pth')[0]),
+    ('Ours', 'output/eval_results/seed_123'),
+    ('wo_Rep', 'output/eval_results/ablation_no_rep'),
+    ('wo_ELA', 'output/eval_results/ablation_no_ela'),
+    ('wo_DWMFF', 'output/eval_results/ablation_no_dwmff'),
+    ('wo_Boundary', 'output/eval_results/ablation_no_boundary'),
 ]
 
 # ── Decoder ──
@@ -93,28 +99,21 @@ def save_originals(samples, out_dir):
         print(f'  {name}: original + GT saved')
 
 print('=== Saving originals ===')
-save_originals(ABL_SAMPLES, ABL_DIR)
+for ab_dir, ab_samples in ABLATION_SETS.items():
+    save_originals(ab_samples, ab_dir)
 save_originals(DEC_SAMPLES, DEC_DIR)
 
 print('\n=== Ablation predictions ===')
-for label, ablation, ckpt in ablation_models:
-    print(f'  Loading {label}...')
-    if ablation is None:
-        model = RepELANet(num_classes=4, channels=(32,64,128,256),
-                          num_blocks=(2,2,4,2), num_heads=(0,0,4,8),
-                          decoder_channels=128, deep_supervision=False)
-    else:
-        model = build_ablation_model(ablation, num_classes=4, deep_supervision=False)
-    model = load_model_weights(model, ckpt)
-    for name in ABL_SAMPLES:
-        img = Image.open(f'Mos2_data/ori/MoS2/{name}.jpg').convert('RGB')
-        img_t = TF.normalize(T.ToTensor()(img), mean, std)
-        pred = sliding_window_pred(model, img_t)
-        pred_rgb = colorize(pred, COLORS_4)
-        out_path = f'{ABL_DIR}/{name}_{label}.png'
-        Image.fromarray(pred_rgb).save(out_path)
-        print(f'    saved: {out_path}')
-    del model; torch.cuda.empty_cache()
+for label, eval_dir in ablation_models:
+    print(f'  Reading {label} from {eval_dir}...')
+    for ab_dir, ab_samples in ABLATION_SETS.items():
+        for name in ab_samples:
+            pred_path = f'{eval_dir}/{name}_pred.png'
+            pred = np.array(Image.open(pred_path))
+            pred_rgb = colorize(pred, COLORS_4)
+            out_path = f'{ab_dir}/{name}_{label}.png'
+            Image.fromarray(pred_rgb).save(out_path)
+            print(f'    saved: {out_path}')
 
 print('\n=== Decoder predictions ===')
 for label, dname in decoder_models:
@@ -133,5 +132,7 @@ for label, dname in decoder_models:
     del model; torch.cuda.empty_cache()
 
 print('\n✅ All individual images saved!')
-print(f'  Ablation: {ABL_DIR}/')
+print('  Ablation sets:')
+for ab_dir in ABLATION_SETS:
+    print(f'    {ab_dir}/')
 print(f'  Decoder:  {DEC_DIR}/')

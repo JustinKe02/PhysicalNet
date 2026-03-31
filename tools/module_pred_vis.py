@@ -1,11 +1,11 @@
 """
-Progressive feature-to-prediction visualization for seed_42 model.
+Progressive feature-to-prediction visualization for the main MoS2 model.
 
 For each test image, generates colorized probe predictions from 3 key
 network modules plus the final prediction. Shows progressive feature
 refinement from coarse to fine.
 
-Output per image (saved to output/eval_results/seed_42/visualizations_uinified/<name>/):
+Output per image (saved to output/eval_results/<seed_tag>/visualizations_uinified/<name>/):
   - original.png       : original RGB image
   - stem.png           : Stem probe prediction (trained 1x1 conv on stem features)
   - repconv.png        : RepConv probe prediction (trained 1x1 conv on stage2 features)
@@ -18,6 +18,8 @@ Output per image (saved to output/eval_results/seed_42/visualizations_uinified/<
 import sys
 sys.path.insert(0, '/root/autodl-tmp/PhysicalNet')
 
+import argparse
+import glob
 import os
 import numpy as np
 import cv2
@@ -32,11 +34,9 @@ from models.repela_net import repela_net_small
 
 # ─── Config ──────────────────────────────────────────────────────────
 PROJECT      = '/root/autodl-tmp/PhysicalNet'
-CKPT_PATH    = os.path.join(PROJECT, 'output/seed_test/seed_42/repela_small_20260324_080734/best_model.pth')
 IMAGE_DIR    = os.path.join(PROJECT, 'Mos2_data/ori/MoS2')
 MASK_DIR     = os.path.join(PROJECT, 'Mos2_data/mask')
 SPLIT_FILE   = os.path.join(PROJECT, 'splits/test.txt')
-OUTPUT_ROOT  = os.path.join(PROJECT, 'output/eval_results/seed_42/visualizations_uinified')
 
 NUM_CLASSES  = 4
 CLASS_NAMES  = ['background', 'monolayer', 'fewlayer', 'multilayer']
@@ -209,16 +209,38 @@ def make_comparison(img_rgb, pred_color, gt_color, name, save_path):
 
 # ─── Main ────────────────────────────────────────────────────────────
 
+def get_args():
+    parser = argparse.ArgumentParser(description='Generate unified module prediction visualizations')
+    parser.add_argument('--seed-tag', default='seed_123',
+                        help='Seed directory under output/seed_test, e.g. seed_123')
+    parser.add_argument('--checkpoint', default=None,
+                        help='Optional explicit checkpoint path')
+    parser.add_argument('--output-root', default=None,
+                        help='Optional explicit output root')
+    return parser.parse_args()
+
+
 def main():
+    args = get_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    if args.checkpoint:
+        ckpt_path = args.checkpoint
+    else:
+        matches = glob.glob(os.path.join(PROJECT, f'output/seed_test/{args.seed_tag}/*/best_model.pth'))
+        if not matches:
+            raise FileNotFoundError(f'No checkpoint found for {args.seed_tag}')
+        ckpt_path = matches[0]
+
+    output_root = args.output_root or os.path.join(PROJECT, f'output/eval_results/{args.seed_tag}/visualizations_uinified')
 
     # Load model
     print('Loading model...')
     model = repela_net_small(num_classes=4, deep_supervision=False, use_cse=False)
-    ckpt  = torch.load(CKPT_PATH, map_location='cpu', weights_only=False)
+    ckpt  = torch.load(ckpt_path, map_location='cpu', weights_only=False)
     model.load_state_dict(ckpt['model'])
     model = model.to(device).eval()
-    print(f'  Loaded: {CKPT_PATH}')
+    print(f'  Loaded: {ckpt_path}')
 
     # Set up
     extractor = FeatureExtractor(model)
@@ -231,13 +253,13 @@ def main():
     train_probe_heads(heads, extractor, model, device, names)
 
     # Generate visualizations
-    os.makedirs(OUTPUT_ROOT, exist_ok=True)
+    os.makedirs(output_root, exist_ok=True)
     print('Generating visualizations...\n')
 
     for name in names:
         img_path  = os.path.join(IMAGE_DIR, f'{name}.jpg')
         mask_path = os.path.join(MASK_DIR,  f'{name}.png')
-        out_dir   = os.path.join(OUTPUT_ROOT, name)
+        out_dir   = os.path.join(output_root, name)
         os.makedirs(out_dir, exist_ok=True)
 
         if not os.path.exists(img_path):
@@ -296,7 +318,7 @@ def main():
         print(f'  ✓ {name:>5s} → {out_dir}/')
 
     extractor.remove()
-    print(f'\nDone! Saved to: {OUTPUT_ROOT}/')
+    print(f'\nDone! Saved to: {output_root}/')
 
 
 if __name__ == '__main__':

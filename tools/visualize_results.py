@@ -32,7 +32,18 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from sklearn.metrics import confusion_matrix
+
+try:
+    from sklearn.metrics import confusion_matrix
+except Exception:
+    def confusion_matrix(y_true, y_pred, labels):
+        n = len(labels)
+        label_to_idx = {label: i for i, label in enumerate(labels)}
+        cm = np.zeros((n, n), dtype=np.int64)
+        for t, p in zip(y_true, y_pred):
+            if t in label_to_idx and p in label_to_idx:
+                cm[label_to_idx[t], label_to_idx[p]] += 1
+        return cm
 
 from models.repela_net import repela_net_small
 from datasets.mos2_dataset import MoS2Dataset

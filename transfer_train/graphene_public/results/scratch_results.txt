@@ -1,0 +1,10 @@
+Dataset: graphene_scratch
+Pretrained: none
+Best epoch: 60
+mIoU: 0.6067
+Pixel Acc: 0.9398
+Mean F1: 0.7029
+
+C0     IoU=0.9432  F1=0.9708
+C1     IoU=0.1960  F1=0.3278
+C2     IoU=0.6809  F1=0.8101
